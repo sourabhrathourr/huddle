@@ -1,0 +1,23 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the version in the command
+        run: test "$GITHUB_REF_NAME" = "v$(python3 huddle --version | awk '{ print $2 }')"
+      - run: python3 -m unittest discover -s tests
+      - run: scripts/package.sh dist
+      - name: Publish the release install.sh downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/huddle.tar.gz dist/SHA256SUMS --title "$GITHUB_REF_NAME" --notes-file notes.md

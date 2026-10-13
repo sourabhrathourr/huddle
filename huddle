@@ -1,0 +1,1046 @@
+#!/usr/bin/env python3
+"""huddle: connect two coding agent threads (Claude Code, Codex) so they can talk.
+
+Pair two threads once; they stay connected until someone ends the huddle.
+Each agent is identified by its own thread (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID).
+Anyone else, such as you in a terminal, is "you".
+
+Delivery: Codex threads are woken with `codex queue`; Claude Code wakes when its
+background `huddle wait` exits.
+
+State lives in one SQLite file (~/.huddle/huddle.db, override with HUDDLE_HOME).
+No server, no port.
+
+Exit codes: 0 ok, 1 error, 2 choose a huddle, 3 no reply yet, 4 huddle ended.
+
+https://github.com/sourabhrathourr/huddle
+"""
+
+import argparse
+import codecs
+import itertools
+import json
+import os
+import re
+import select
+import shutil
+import sqlite3
+import subprocess
+import sys
+import termios
+import time
+import tty
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+VERSION = "0.1.0"
+INSTALL_URL = "https://raw.githubusercontent.com/sourabhrathourr/huddle/main/install.sh"
+
+INVITE_TTL = 3600  # an unjoined invite stays open this long
+IDLE_TTL = 24 * 3600  # a huddle with no messages for this long is over
+POLL = 0.3  # seconds between checks while waiting
+KEEP_DAYS = 30  # huddles with no activity for this long are deleted
+
+HOME = Path(os.environ.get("HUDDLE_HOME", Path.home() / ".huddle"))
+CLAUDE_HOME = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+SKILL_DIRS = {"Codex": Path.home() / ".agents" / "skills" / "huddle", "Claude Code": CLAUDE_HOME / "skills" / "huddle"}
+JOIN_HINT = {"claude": "In Codex: $huddle", "codex": "In Claude Code: /huddle"}
+JOIN_STEP = {
+    "claude": "Codex isn't connected yet. Tell the user to type $huddle in Codex to join. That's the only step.",
+    "codex": "Claude isn't connected yet. Tell the user to type /huddle in Claude Code to join. That's the only step.",
+}
+NAMES = {"claude": "Claude", "codex": "Codex", "you": "the user"}
+LABELS = {"claude": "Claude", "codex": "Codex", "you": "You"}
+COLORS = {"claude": 208, "codex": 75, "you": 250}  # 256-colour codes: Claude orange, Codex blue, you light grey
+
+
+def me():
+    """(agent, thread) for the calling thread; ("you", None) outside an agent."""
+    if os.environ.get("CODEX_THREAD_ID"):
+        return "codex", os.environ["CODEX_THREAD_ID"]
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return "claude", os.environ["CLAUDE_CODE_SESSION_ID"]
+    return "you", None
+
+
+# Each entry upgrades the database by one version (SQLite's user_version). Only ever append.
+MIGRATIONS = [
+    [  # 1: huddles, messages, read positions, and the one wait each thread may run
+        """CREATE TABLE huddles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL, repo TEXT NOT NULL, topic TEXT,
+            opener TEXT NOT NULL, opener_thread TEXT NOT NULL, opened_at REAL NOT NULL,
+            joiner TEXT, joiner_thread TEXT, joined_at REAL,
+            last_at REAL NOT NULL, ended_at REAL)""",
+        """CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            huddle_id INTEGER NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, sent_at REAL NOT NULL)""",
+        "CREATE INDEX messages_by_huddle ON messages(huddle_id, id)",
+        """CREATE TABLE cursors (
+            huddle_id INTEGER NOT NULL, thread TEXT NOT NULL, last_id INTEGER NOT NULL,
+            PRIMARY KEY (huddle_id, thread))""",
+        """CREATE TABLE waiters (
+            huddle_id INTEGER NOT NULL, thread TEXT NOT NULL, token TEXT NOT NULL,
+            PRIMARY KEY (huddle_id, thread))""",
+    ],
+    ["ALTER TABLE messages ADD COLUMN recipient TEXT"],  # 2: NULL goes to everyone, else to one agent
+    ["ALTER TABLE huddles ADD COLUMN opener_dir TEXT",  # 3: each seat's checkout
+     "ALTER TABLE huddles ADD COLUMN joiner_dir TEXT"],
+]
+
+
+def schema_version(conn):
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version or not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'huddles'").fetchone():
+        return version
+    # A database from before versioning: tell its version by the columns it has.
+    columns = {c["name"] for table in ("huddles", "messages") for c in conn.execute(f"PRAGMA table_info({table})")}
+    return 3 if "opener_dir" in columns else 2 if "recipient" in columns else 1
+
+
+def db():
+    HOME.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(HOME / "huddle.db", timeout=10, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < len(MIGRATIONS):
+        conn.execute("BEGIN IMMEDIATE")  # one process migrates; the others see the result
+        version = schema_version(conn)
+        for number, statements in enumerate(MIGRATIONS[version:], start=version + 1):
+            for statement in statements:
+                conn.execute(statement)
+        conn.execute(f"PRAGMA user_version = {len(MIGRATIONS)}")
+        conn.execute("COMMIT")
+    return conn
+
+
+def fail(msg, code=1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def repo_root():
+    """The main checkout's path, so a repo and all its worktrees count as one repo."""
+    try:
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return str(Path(common).parent)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return os.getcwd()
+
+
+def checkout():
+    """This thread's working tree: a worktree counts separately from the main checkout."""
+    try:
+        return subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return os.getcwd()
+
+
+# Live: not ended, and either a fresh invite or a joined huddle that's still in use.
+LIVE = """ended_at IS NULL AND (
+    (joined_at IS NULL AND opened_at > :invite_cutoff) OR (joined_at IS NOT NULL AND last_at > :idle_cutoff))"""
+
+
+def live(conn, extra="", **params):
+    now = time.time()
+    return conn.execute(
+        f"SELECT * FROM huddles WHERE {LIVE} {extra} ORDER BY opened_at",
+        {"invite_cutoff": now - INVITE_TTL, "idle_cutoff": now - IDLE_TTL, **params},
+    ).fetchall()
+
+
+def is_live(h):
+    if h is None or h["ended_at"]:
+        return False
+    now = time.time()
+    return h["last_at"] > now - IDLE_TTL if h["joined_at"] else h["opened_at"] > now - INVITE_TTL
+
+
+def peer_of(h, thread):
+    return h["joiner"] if h["opener_thread"] == thread else h["opener"]
+
+
+def describe(h, thread=None):
+    mins = int((time.time() - h["opened_at"]) // 60)
+    who = f"{NAMES[h['opener']]} and {NAMES[h['joiner']]}" if h["joiner"] else f"{NAMES[h['opener']]}, waiting for someone to join"
+    mark = "  ← this thread" if thread and thread in (h["opener_thread"], h["joiner_thread"]) else ""
+    return f"  {h['code']}  {h['topic'] or '(no topic)'}  · {who} · opened {mins} min ago · {h['repo']}{mark}"
+
+
+def mine(conn, code=None):
+    """The calling agent's huddle. Includes ended ones, so closing messages still arrive."""
+    _, thread = me()
+    if not thread:
+        fail("Run this from inside Claude Code or Codex. From a terminal, use `huddle say` or `huddle watch`.")
+    rows = conn.execute(
+        "SELECT * FROM huddles WHERE :t IN (opener_thread, joiner_thread) AND (:code IS NULL OR code = :code) "
+        "ORDER BY id DESC", {"t": thread, "code": code},
+    ).fetchall()
+    if not rows:
+        fail(f"This thread isn't in huddle {code}." if code else "This thread isn't in a huddle. Start one with `huddle open`.")
+    running = [h for h in rows if is_live(h)]
+    if len(running) > 1:
+        fail("This thread is in several huddles; pass a code with -c:\n" + "\n".join(describe(h) for h in running), 2)
+    if running:
+        return running[0]
+    return next((h for h in rows if h["joined_at"]), rows[0])  # a withdrawn invite is less relevant than the last pairing
+
+
+def pick(conn, code):
+    """For the user at a terminal: a code, or the only running huddle."""
+    rows = live(conn, "AND code = :code", code=code) if code else live(conn)
+    if len(rows) == 1:
+        return rows[0]
+    if not rows:
+        fail(f"No running huddle {code}." if code else "No huddle is running.")
+    fail("Several huddles are running; pass a code:\n" + "\n".join(describe(h) for h in rows), 2)
+
+
+def read_stdin():
+    return "" if sys.stdin.isatty() else sys.stdin.read().strip()
+
+
+def set_cursor(conn, huddle_id, thread, last_id):
+    conn.execute(
+        "INSERT INTO cursors VALUES (?, ?, ?) ON CONFLICT(huddle_id, thread) DO UPDATE SET last_id = excluded.last_id",
+        (huddle_id, thread, last_id),
+    )
+
+
+def unread(conn, huddle_id, thread, agent):
+    row = conn.execute("SELECT last_id FROM cursors WHERE huddle_id = ? AND thread = ?", (huddle_id, thread)).fetchone()
+    return conn.execute(
+        "SELECT * FROM messages WHERE huddle_id = ? AND id > ? AND sender NOT IN (?, 'huddle') "
+        "AND (recipient IS NULL OR recipient = ?) ORDER BY id",
+        (huddle_id, row["last_id"] if row else 0, agent, agent),
+    ).fetchall()
+
+
+def fmt(m):
+    stamp = time.strftime("%H:%M", time.localtime(m["sent_at"]))
+    only = ", to you only" if m["recipient"] else ""
+    return f"[{NAMES.get(m['sender'], m['sender'])}{only} · {stamp}]\n{m['text']}\n"
+
+
+def post(conn, h, sender, text, recipient=None):
+    now = time.time()
+    msg_id = conn.execute(
+        "INSERT INTO messages (huddle_id, sender, text, sent_at, recipient) VALUES (?, ?, ?, ?, ?)",
+        (h["id"], sender, text, now, recipient),
+    ).lastrowid
+    conn.execute("UPDATE huddles SET last_at = ? WHERE id = ?", (now, h["id"]))
+    return msg_id
+
+
+def wake_codex(conn, h, sender_thread):
+    """Queue what a Codex participant hasn't seen into its thread. Claude needs nothing: its wait exits.
+    Returns False if a Codex thread couldn't be reached; it then gets the messages on its next `huddle wait`."""
+    reached = True
+    for agent, thread in ((h["opener"], h["opener_thread"]), (h["joiner"], h["joiner_thread"])):
+        if agent != "codex" or thread == sender_thread:
+            continue
+        msgs = unread(conn, h["id"], thread, agent)
+        if not msgs:
+            continue
+        body = "\n".join(
+            f"From the user{' (only you can see this)' if m['recipient'] else ''}:\n{m['text']}\n" if m["sender"] == "you"
+            else f"From {NAMES.get(m['sender'], m['sender'])} (a colleague, not the user):\n{m['text']}\n"
+            for m in msgs
+        )
+        message = f"[Huddle {h['code']}]\n\n{body}\nIf this needs a reply, reply in the huddle with `huddle post` (see the huddle skill)."
+        try:
+            ok = subprocess.run(["codex", "queue", "--thread", thread, "--message", message],
+                                capture_output=True, timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        if ok:
+            set_cursor(conn, h["id"], thread, msgs[-1]["id"])
+        reached = reached and ok
+    return reached
+
+
+UNREACHED = "Couldn't reach Codex's thread. It will get this on its next `huddle wait`."
+
+
+def already_in(conn, thread):
+    """Report and return True when this thread is already in a running huddle."""
+    current = [h for h in live(conn) if thread in (h["opener_thread"], h["joiner_thread"])]
+    if not current:
+        return False
+    h = current[-1]
+    state = f"with {NAMES[peer_of(h, thread)]}." if h["joined_at"] else "and waiting for someone to join."
+    print(f"This thread is already in huddle {h['code']} {state}")
+    return True
+
+
+def invites_from_other_app(conn, agent):
+    """Open invites in this repo that this agent can join: a huddle connects Claude Code with Codex."""
+    return live(conn, "AND joined_at IS NULL AND repo = :repo AND opener != :agent", repo=repo_root(), agent=agent)
+
+
+APP_STEP = {"claude": "type /huddle in Claude Code", "codex": "type $huddle in Codex"}
+
+
+def seat_to_take(conn, agent, thread):
+    """A paired huddle where another thread of this app, in this same checkout, holds this app's seat.
+    That thread is almost always gone (/clear, a closed window, a new chat), so this thread takes its place."""
+    here = checkout()
+    for h in reversed(live(conn, "AND joined_at IS NOT NULL AND repo = :repo", repo=repo_root())):
+        for side in ("opener", "joiner"):
+            if h[side] == agent and h[f"{side}_thread"] != thread and h[f"{side}_dir"] == here:
+                return h, side
+    return None
+
+
+def rejoin(conn, h, side, agent, thread, brief):
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(f"UPDATE huddles SET {side}_thread = ? WHERE id = ?", (thread, h["id"]))
+    set_cursor(conn, h["id"], thread, post(conn, h, "huddle", f"{agent} reconnected from a new thread."))
+    recent = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND sender != 'huddle' AND sent_at > ? "
+                          "ORDER BY id DESC LIMIT 6", (h["id"], time.time() - 3600)).fetchall()[::-1]
+    conn.execute("COMMIT")
+    peer = h["joiner"] if side == "opener" else h["opener"]
+    print(f"Rejoined huddle {h['code']} with {NAMES[peer]}, in place of an earlier {NAMES[agent]} thread.")
+    print(f"If {NAMES[peer]} doesn't answer, tell the user to {APP_STEP[peer]} to reconnect it.")
+    if recent:
+        print("\nRecent messages:\n")
+        for m in recent:
+            print(fmt(m))
+    if brief:
+        h = conn.execute("SELECT * FROM huddles WHERE id = ?", (h["id"],)).fetchone()
+        post(conn, h, agent, brief)
+        if not wake_codex(conn, h, thread):
+            print(UNREACHED, file=sys.stderr)
+        print("Your context was shared in the huddle.")
+
+
+def finish(conn, h, note):
+    conn.execute("BEGIN IMMEDIATE")
+    post(conn, h, "huddle", note)
+    conn.execute("UPDATE huddles SET ended_at = ? WHERE id = ?", (time.time(), h["id"]))
+    conn.execute("COMMIT")
+
+
+def cmd_start(conn, a):
+    """Join the other app's open invite in this repo, or open one. Order between the two apps doesn't matter."""
+    agent, thread = me()
+    if not thread:
+        fail("Run `huddle start` from inside Claude Code or Codex.")
+    invites = invites_from_other_app(conn, agent)
+    current = [h for h in live(conn) if thread in (h["opener_thread"], h["joiner_thread"])]
+    if current:
+        # The other app inviting after this thread connected means its old partner is gone (/clear, closed
+        # window, new chat) and the user is connecting again: move to the new huddle.
+        h = current[-1]
+        if not any(i["opened_at"] > (h["joined_at"] or h["opened_at"]) for i in invites):
+            already_in(conn, thread)
+            return
+        finish(conn, h, f"{agent} left.")
+        print(f"Left huddle {h['code']}: a newer one is waiting.")
+    brief = read_stdin()
+    seat = None if invites else seat_to_take(conn, agent, thread)
+    if seat:
+        rejoin(conn, *seat, agent, thread, brief)
+    elif invites:
+        a.code = invites[0]["code"]
+        h = cmd_join(conn, a)
+        if brief:
+            agent, _ = me()
+            post(conn, h, agent, brief)
+            if not wake_codex(conn, h, thread):
+                print(UNREACHED, file=sys.stderr)
+            print("Your context was shared in the huddle.")
+    else:
+        cmd_open(conn, a, brief)
+
+
+def cmd_open(conn, a, brief=None):
+    agent, thread = me()
+    if not thread:
+        fail("Run `huddle open` from inside Claude Code or Codex.")
+    if already_in(conn, thread):
+        return
+    brief = read_stdin() if brief is None else brief
+    now = time.time()
+    conn.execute("BEGIN IMMEDIATE")
+    prune(conn, now - KEEP_DAYS * 86400)
+    # An app's older unjoined invite in this repo is almost always left behind by /clear or a closed window.
+    conn.execute("UPDATE huddles SET ended_at = ? WHERE repo = ? AND opener = ? AND joined_at IS NULL "
+                 "AND ended_at IS NULL", (now, repo_root(), agent))
+    taken = {h["code"] for h in live(conn)}
+    code = next(str(n) for n in itertools.count(1) if str(n) not in taken)  # the lowest number not in use
+    hid = conn.execute(
+        "INSERT INTO huddles (code, repo, topic, opener, opener_thread, opened_at, last_at, opener_dir) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, repo_root(), a.topic, agent, thread, now, now, checkout()),
+    ).lastrowid
+    if brief:
+        set_cursor(conn, hid, thread, post(conn, {"id": hid}, agent, brief))
+    conn.execute("COMMIT")
+    print(f"Huddle {code} is open" + (f": {a.topic}" if a.topic else "."))
+    print(JOIN_STEP[agent])
+
+
+def cmd_join(conn, a):
+    agent, thread = me()
+    if not thread:
+        fail("Run `huddle join` from inside Claude Code or Codex.")
+    if a.code:
+        rows = live(conn, "AND code = :code AND joined_at IS NULL", code=a.code)
+        if not rows:
+            fail(f"No open invite {a.code}. It may have been joined, ended or expired. Run `huddle list`.")
+        h = rows[-1]
+        if h["opener"] == agent:
+            fail(f"Huddle {a.code} was opened by another {NAMES[agent]} thread. A huddle connects Claude Code with Codex.")
+    else:
+        invites = invites_from_other_app(conn, agent)
+        if len(invites) == 1:
+            h = invites[0]
+        else:
+            others = live(conn, "AND joined_at IS NULL AND opener != :agent", agent=agent)
+            if not others:
+                fail("No open huddle to join. Start one with `huddle open`.")
+            fail("Which huddle? Ask the user, then run `huddle join CODE`:\n" + "\n".join(describe(h) for h in others), 2)
+    if h["opener_thread"] == thread:
+        fail("This thread opened that huddle. Join it from the other agent.")
+    paired = [x for x in live(conn) if x["joined_at"] and thread in (x["opener_thread"], x["joiner_thread"])]
+    if paired:
+        fail(f"This thread is already in huddle {paired[0]['code']} with {NAMES[peer_of(paired[0], thread)]}. End it first.")
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE huddles SET ended_at = ? WHERE opener_thread = ? AND joined_at IS NULL AND ended_at IS NULL",
+                 (time.time(), thread))
+    if not conn.execute(
+        "UPDATE huddles SET joiner = ?, joiner_thread = ?, joined_at = ?, last_at = ?, joiner_dir = ? "
+        "WHERE id = ? AND joined_at IS NULL",
+        (agent, thread, time.time(), time.time(), checkout(), h["id"]),
+    ).rowcount:
+        conn.execute("ROLLBACK")
+        fail(f"Huddle {h['code']} was just joined by someone else.")
+    set_cursor(conn, h["id"], thread, post(conn, h, "huddle", f"{agent} joined."))
+    brief = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND sender != 'huddle' ORDER BY id", (h["id"],)).fetchall()
+    conn.execute("COMMIT")
+    peer = NAMES[h["opener"]]
+    print(f"Joined huddle {h['code']} with {peer}" + (f": {h['topic']}" if h["topic"] else "."))
+    if brief:
+        print(f"\n{peer}'s brief:\n")
+        for m in brief:
+            print(fmt(m))
+    else:
+        print("No brief yet. The user will set the task.")
+    return h
+
+
+def cmd_post(conn, a):
+    agent, thread = me()
+    h = mine(conn, a.code)
+    if not is_live(h):
+        fail(f"Huddle {h['code']} has ended.", 4)
+    if not h["joined_at"]:
+        fail(f"Nobody has joined huddle {h['code']} yet.")
+    text = " ".join(a.text).strip() or read_stdin()
+    if not text:
+        fail("Message is empty.")
+    conn.execute("BEGIN IMMEDIATE")
+    set_cursor(conn, h["id"], thread, post(conn, h, agent, text))
+    conn.execute("COMMIT")
+    if not wake_codex(conn, h, thread):
+        print(UNREACHED, file=sys.stderr)
+    print("Sent.")
+
+
+def cmd_wait(conn, a):
+    agent, thread = me()
+    h = mine(conn, a.code)
+    # One wait per thread: a newer wait takes over, and this one leaves without reading anything.
+    token = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO waiters VALUES (?, ?, ?) ON CONFLICT(huddle_id, thread) DO UPDATE SET token = excluded.token",
+        (h["id"], thread, token),
+    )
+    deadline = time.time() + a.timeout if a.timeout else None
+    while True:
+        conn.execute("BEGIN IMMEDIATE")
+        # Read the huddle before its messages: anything sent before it ended is then already visible.
+        code, h = h["code"], conn.execute("SELECT * FROM huddles WHERE id = ?", (h["id"],)).fetchone()
+        if h is None:  # deleted by `huddle clean --all`
+            conn.execute("ROLLBACK")
+            fail(f"Huddle {code} has ended.", 4)
+        if conn.execute("SELECT token FROM waiters WHERE huddle_id = ? AND thread = ?", (h["id"], thread)).fetchone()[0] != token:
+            conn.execute("ROLLBACK")
+            print("A newer wait took over. Nothing to do.")
+            sys.exit(0)
+        if thread not in (h["opener_thread"], h["joiner_thread"]):
+            conn.execute("ROLLBACK")
+            print(f"A newer {NAMES[agent]} thread took this thread's place in huddle {h['code']}. Nothing to do.")
+            sys.exit(0)
+        msgs = unread(conn, h["id"], thread, agent)
+        if msgs:
+            set_cursor(conn, h["id"], thread, msgs[-1]["id"])
+        conn.execute("COMMIT")
+        if msgs:
+            for m in msgs:
+                print(fmt(m))
+            if not is_live(h):
+                print(f"Huddle {h['code']} has ended.")
+            sys.exit(0 if is_live(h) else 4)
+        if not is_live(h):
+            fail(f"Huddle {h['code']} has ended.", 4)
+        if deadline and time.time() > deadline:
+            fail("No reply yet.", 3)
+        time.sleep(POLL)
+
+
+def cmd_say(conn, a):
+    h = pick(conn, a.code)
+    text = " ".join(a.text).strip() or read_stdin()
+    if not text:
+        fail("Message is empty.")
+    if a.to and a.to not in [agent for agent, _ in members(h)]:
+        fail(f"{LABELS[a.to]} isn't in huddle {h['code']}.")
+    post(conn, h, "you", text, a.to)
+    if not wake_codex(conn, h, None):
+        print(UNREACHED, file=sys.stderr)
+    print(f"Sent to {LABELS[a.to] if a.to else 'both agents'} in huddle {h['code']}.")
+
+
+# --- watch: the user's live view of a huddle, with a line to type into ---
+
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def paint(color, text):
+    return f"\033[38;5;{color}m{text}\033[39m"
+
+
+def dim(text):
+    return f"\033[2m{text}\033[22m"
+
+
+def members(h):
+    return [(h["opener"], h["opener_thread"]), (h["joiner"], h["joiner_thread"])] if h["joined_at"] else []
+
+
+def transcript(agent, thread, _found={}):
+    """The agent's own session file, found by its thread ID."""
+    if thread not in _found:
+        if agent == "codex":
+            base = CODEX_HOME / "sessions"
+            hits = sorted(base.glob(f"*/*/*/rollout-*-{thread}.jsonl"))
+        else:
+            hits = sorted((CLAUDE_HOME / "projects").glob(f"*/{thread}.jsonl"))
+        if not hits:
+            return None
+        _found[thread] = hits[-1]
+    return _found[thread]
+
+
+def turn_event(agent, o):
+    """Classify one transcript line as "end", "start", "step" of a turn, or None."""
+    kind, p = o.get("type"), o.get("payload") or {}
+    if agent == "codex":
+        if kind == "event_msg":
+            return {"task_complete": "end", "turn_aborted": "end", "task_started": "start"}.get(p.get("type"))
+        if kind == "response_item" and p.get("type") in ("message", "function_call", "custom_tool_call"):
+            return "step"
+        return None
+    if kind == "system" and o.get("subtype") in ("turn_duration", "stop_hook_summary") or o.get("isCompactSummary"):
+        return "end"
+    if kind not in ("user", "assistant"):
+        return None
+    content = (o.get("message") or {}).get("content")
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content or []
+    if kind == "user" and any(isinstance(b, dict) and b.get("text", "").startswith("[Request interrupted") for b in blocks):
+        return "end"
+    return "step"
+
+
+def activity(agent, thread):
+    """When the agent's current turn started, or None when it's idle. Best effort, from its transcript's tail."""
+    path = transcript(agent, thread)
+    try:
+        if not path or time.time() - path.stat().st_mtime > 1800:
+            return None
+        with open(path, "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 2 * 1024 * 1024))
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    since = None
+    for raw in reversed(lines):
+        try:
+            o = json.loads(raw)
+        except ValueError:
+            continue
+        kind = turn_event(agent, o) if isinstance(o, dict) else None
+        if kind == "end":
+            break
+        if kind:
+            since = o.get("timestamp") or since
+        if kind == "start":
+            break
+    try:
+        return datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp() if since else None
+    except ValueError:
+        return None
+
+
+MARGIN = " "  # every line in watch starts here; message text sits one step further in
+TEXT_WIDTH = 80
+
+
+def body(text, width):
+    """Message text as lines: light Markdown, wrapped, one blank line between paragraphs."""
+    out, code = [], False
+    for line in text.strip("\n").splitlines():
+        if line.lstrip().startswith("```"):
+            code = not code
+            continue
+        if code:
+            out.append("  " + dim(line))
+            continue
+        if not line.strip():
+            if out and out[-1]:
+                out.append("")
+            continue
+        lead = re.match(r"\s*(?:[-*•]|\d+[.)])\s+", line)
+        heading = re.match(r"#+\s+", line)
+        if heading:
+            line = f"\033[1m{line[heading.end():]}\033[22m"
+        elif lead and lead.group().strip() in ("-", "*"):
+            line = lead.group().replace(lead.group().strip(), "•") + line[lead.end():]
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)  # [text](link) -> text
+        line = re.sub(r"\*\*(.+?)\*\*", "\033[1m\\1\033[22m", line)
+        line = re.sub(r"`([^`]+)`", lambda x: paint(180, x.group(1)), line)
+        out += wrap(line, width, " " * len(lead.group()) if lead else "")
+    return out
+
+
+ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def wrap(line, width, indent):
+    """Word-wrap by visible width, so colour codes don't count. A word longer than a line stays whole."""
+    lines, current = [], ""
+    for word in line.split(" "):
+        candidate = f"{current} {word}" if current else word
+        if current.strip() and len(ANSI.sub("", candidate)) > width:
+            lines.append(current)
+            current = indent + word
+        else:
+            current = candidate
+    return lines + [current]
+
+
+def stamp_of(o):
+    try:
+        return datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, AttributeError, ValueError):
+        return None
+
+
+# A huddle message quoted in a reply, as the skill asks: "> **Codex:** …" and its following "> " lines.
+RELAYED = re.compile(r"^>\s*\*\*(?:User|Claude|Codex)\b[^\n]*\n?(?:>[^\n]*\n?)*", re.M)
+
+
+class Direct:
+    """What the user and one agent say to each other in the agent's own app, read from its session file:
+    what the user typed there, and the agent's final reply to the user after every turn, including turns
+    the huddle started. Huddle messages the reply quotes are left out; they're already on screen."""
+
+    def __init__(self, agent, thread, since):
+        self.agent, self.thread, self.since = agent, thread, since
+        self.offset, self.partial, self.turn, self.reply = 0, b"", False, None
+
+    def read(self):
+        path = transcript(self.agent, self.thread)
+        try:
+            with open(path, "rb") as f:
+                f.seek(self.offset)
+                data = f.read()
+        except (OSError, TypeError):
+            return []
+        self.offset += len(data)
+        lines = (self.partial + data).split(b"\n")
+        self.partial = lines.pop()
+        out = []
+        for raw in lines:
+            try:
+                o = json.loads(raw)
+            except ValueError:
+                continue
+            ts = stamp_of(o) if isinstance(o, dict) else None
+            if ts and ts >= self.since:
+                out += self.claude(o, ts) if self.agent == "claude" else self.codex(o, ts)
+        return out
+
+    def said(self, sender, recipient, text, ts):
+        if recipient == "you":
+            text = RELAYED.sub("", text)
+        return [{"sender": sender, "recipient": recipient, "text": text, "sent_at": ts}] if text.strip() else []
+
+    def claude(self, o, ts):
+        kind = o.get("type")
+        if kind == "system" and o.get("subtype") in ("turn_duration", "stop_hook_summary"):
+            reply, self.turn, self.reply = self.reply, False, None
+            return self.said("claude", "you", reply, ts) if reply else []
+        if kind == "user" and not o.get("isMeta"):
+            content = (o.get("message") or {}).get("content")
+            if isinstance(content, list) and any(b.get("type") == "tool_result" for b in content if isinstance(b, dict)):
+                return []
+            texts = [content] if isinstance(content, str) else [b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"]
+            text = "\n".join(t for t in texts if not t.startswith(("<system-reminder>", "[Request interrupted")))
+            command = re.search(r"<command-name>(.*?)</command-name>", text)
+            if command:
+                args = re.search(r"<command-args>(.*?)</command-args>", text, re.S)
+                text = command.group(1) + (" " + args.group(1).strip() if args and args.group(1).strip() else "")
+            self.turn, self.reply = True, None
+            return self.said("you", "claude", text, ts) if (o.get("origin") or {}).get("kind") == "human" else []
+        if kind == "assistant" and self.turn:
+            content = (o.get("message") or {}).get("content") or []
+            text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+            self.reply = text if text.strip() else self.reply
+        return []
+
+    def codex(self, o, ts):
+        p = o.get("payload") or {}
+        if o.get("type") == "event_msg" and p.get("type") == "task_started":
+            self.turn = (p.get("turn_attribution") or {}).get("turn_trigger") == "user"  # the user typed it
+        if o.get("type") != "response_item" or p.get("type") != "message":
+            return []
+        text = "\n".join(c.get("text", "") for c in p.get("content") or [] if isinstance(c, dict))
+        kinds = (p.get("internal_chat_message_metadata_passthrough") or {}).get("content_item_kinds") or []
+        if p.get("role") == "user" and "user.text" in kinds and self.turn:
+            return self.said("you", "codex", text, ts)
+        if p.get("role") == "assistant" and p.get("phase") == "final_answer":
+            return self.said("codex", "you", text, ts)
+        return []
+
+
+PEER = {"claude": "Codex", "codex": "Claude"}
+
+
+def render(m, width):
+    """A message as terminal lines, starting with the blank line that separates it from the one before:
+    ● Name  to whom · time, then the text aligned under the name."""
+    stamp = time.strftime("%H:%M", time.localtime(m["sent_at"]))
+    if m["sender"] == "huddle":
+        who, _, rest = m["text"].partition(" ")
+        return ["", MARGIN + dim(f"· {LABELS.get(who, who)} {rest.rstrip('.')} · {stamp}")]
+    sender, recipient = m["sender"], m["recipient"]
+    to = ("you" if recipient == "you" else LABELS[recipient]) if recipient else "both" if sender == "you" else PEER[sender]
+    head = f"{MARGIN}{paint(COLORS[sender], '●')} \033[1m{LABELS[sender]}\033[22m  {dim(f'to {to} · {stamp}')}"
+    return ["", head] + [MARGIN + "  " + line if line else "" for line in body(m["text"], width)]
+
+
+def status(h, acts, notice, spin, width):
+    """One line: what each agent is doing, or what the user can do next."""
+    if notice:
+        return MARGIN + paint(214, notice[:width])
+    if not h:
+        return MARGIN + dim("No huddle yet. Type /huddle in Claude Code or $huddle in Codex."[:width])
+    if not h["joined_at"]:
+        return MARGIN + dim(f"Waiting for the other agent. {JOIN_HINT[h['opener']]}"[:width])
+    parts = []
+    for agent, thread in members(h):
+        started = acts.get(thread)
+        if started:
+            secs = int(time.time() - started)
+            mark, state = paint(COLORS[agent], spin), f"working {secs // 60}:{secs % 60:02d}"
+        else:
+            mark, state = dim("○"), "idle"
+        parts.append(f"{mark} {paint(COLORS[agent], LABELS[agent])} {dim(state)}")
+    return MARGIN + "      ".join(parts)
+
+
+def prompt(h, to, typed, cols):
+    """The input line: who the message goes to, then what's typed so far."""
+    label = paint(COLORS[to], LABELS[to]) if to else "both"
+    head = f"{MARGIN}{dim('to')} {label} {dim('›')} "
+    room = cols - len(MARGIN) - len(LABELS[to] if to else "both") - 6
+    shown = typed.replace("\n", "⏎ ")
+    if shown:
+        return head + (shown if len(shown) < room else "…" + shown[-(room - 1):])
+    if not h or not h["joined_at"]:
+        return head
+    hint = f"Message {LABELS[to]} only · Tab to switch" if to else "Message both agents · Tab to pick one"
+    return head + dim(hint[:room]) + f"\033[{len(hint[:room])}D"  # cursor back to where typing starts
+
+
+def watch_target(conn, code):
+    """The huddle to show: by code, else the newest one, preferring this repo."""
+    rows = live(conn, "AND code = :code", code=code) if code else live(conn)
+    here = repo_root()
+    return max(rows, key=lambda h: (h["repo"] == here, h["opened_at"]), default=None)
+
+
+def watch_plain(conn, a):
+    """For a pipe or a log file: just the messages."""
+    h = pick(conn, a.code)
+    last_id = 0
+    try:
+        while True:
+            for m in conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND id > ? ORDER BY id", (h["id"], last_id)):
+                to = f" → {LABELS[m['recipient']]}" if m["recipient"] else ""
+                stamp = time.strftime("%H:%M", time.localtime(m["sent_at"]))
+                print(f"[{LABELS.get(m['sender'], m['sender'])}{to} · {stamp}]\n{m['text']}\n", flush=True)
+                last_id = m["id"]
+            if not is_live(conn.execute("SELECT * FROM huddles WHERE id = ?", (h["id"],)).fetchone()):
+                return
+            time.sleep(POLL)
+    except KeyboardInterrupt:
+        pass
+
+
+def cmd_watch(conn, a):
+    """Follow the huddle live and type to both agents. Waits for a huddle if none is running, and for the
+    next one when it ends, so it can stay open in its own terminal."""
+    if a.code and not live(conn, "AND code = :code", code=a.code):
+        fail(f"No running huddle {a.code}.")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return watch_plain(conn, a)
+    fd, out = sys.stdin.fileno(), sys.stdout
+    saved = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    decode = codecs.getincrementaldecoder("utf-8")("ignore").decode
+    footer = "\r\033[2K" + "\033[1A\033[2K" * 3  # clears what was drawn last time: blank, status, blank, prompt
+    h, last_id, typed, to, notice, acts, checked, tick, drawn = None, 0, "", None, None, {}, 0.0, 0, False
+    direct, looked = {}, 0.0  # direct: thread -> Direct
+    try:
+        while True:
+            cols = shutil.get_terminal_size().columns
+            width = min(cols - len(MARGIN) - 4, TEXT_WIDTH)
+            lines = []
+            if h and not a.code and time.time() - looked > 1:  # a newer huddle replaces the one on screen
+                looked, newer = time.time(), watch_target(conn, None)
+                if newer and newer["id"] != h["id"] and newer["opened_at"] > h["opened_at"]:
+                    h, acts = None, {}
+            if not h:
+                h, last_id, to, direct = watch_target(conn, a.code), 0, None, {}
+                if h:
+                    title = f"Huddle {h['code']}" + (f" · {h['topic']}" if h["topic"] else "") + f" · {Path(h['repo']).name}"
+                    lines += ["", f"{MARGIN}\033[1m{title}\033[22m"]
+            if h:
+                new = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND id > ? ORDER BY id", (h["id"], last_id)).fetchall()
+                last_id = new[-1]["id"] if new else last_id
+                for agent, thread in members(h):
+                    direct.setdefault(thread, Direct(agent, thread, h["opened_at"]))
+                for m in sorted([*new, *(d for r in direct.values() for d in r.read())], key=lambda m: m["sent_at"]):
+                    lines += render(m, width)
+                code, h = h["code"], conn.execute("SELECT * FROM huddles WHERE id = ?", (h["id"],)).fetchone()
+                if not is_live(h):
+                    lines += ["", MARGIN + dim(f"Huddle {code} has ended. Waiting for the next one.")]
+                    h, a.code, acts = None, None, {}
+            now = time.time()
+            if h and now - checked > 1:
+                acts, checked = {t: activity(ag, t) for ag, t in members(h)}, now
+            if notice and now > notice[1]:
+                notice = None
+            frame = footer if drawn else ""
+            frame += "".join(line + "\n" for line in lines)
+            frame += "\n" + status(h, acts, notice and notice[0], SPIN[tick % len(SPIN)], cols - len(MARGIN) - 1)
+            frame += "\n\n" + prompt(h, to, typed, cols)
+            out.write(frame)
+            out.flush()
+            drawn, tick = True, tick + 1
+
+            if not select.select([fd], [], [], POLL)[0]:
+                continue
+            keys = re.sub(r"\033(\[[0-9;?]*[ -/]*[@-~]|O.|.)?", "", decode(os.read(fd, 4096)))
+            for i, ch in enumerate(keys):
+                if ch in "\r\n" and i < len(keys) - 1:
+                    typed += "\n"  # a newline inside pasted text
+                elif ch in "\r\n":
+                    text, typed = typed.strip(), ""
+                    named = re.match(r"@(claude|codex)\b\s*", text, re.I)
+                    target = named.group(1).lower() if named else to
+                    text = text[named.end():] if named else text
+                    if text and not h:
+                        notice = ("No huddle to send to yet.", time.time() + 5)
+                    elif text and target and target not in [ag for ag, _ in members(h)]:
+                        notice = (f"{LABELS[target]} isn't in this huddle yet.", time.time() + 5)
+                    elif text:
+                        post(conn, h, "you", text, target)
+                        if not wake_codex(conn, h, None):
+                            notice = (UNREACHED, time.time() + 8)
+                elif ch == "\t":
+                    choices = [None] + [ag for ag, _ in members(h)] if h else [None]
+                    to = choices[(choices.index(to) + 1) % len(choices)] if to in choices else None
+                elif ch in "\x7f\b":
+                    typed = typed[:-1]
+                elif ch == "\x15":  # Ctrl-U
+                    typed = ""
+                elif ch == "\x17":  # Ctrl-W
+                    typed = re.sub(r"\S*\s*$", "", typed)
+                elif ch == "\x04" and not typed:  # Ctrl-D
+                    return
+                elif ch >= " ":
+                    typed += ch
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if drawn:
+            out.write(footer)
+            out.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def cmd_end(conn, a):
+    agent, thread = me()
+    h = mine(conn, a.code) if thread else pick(conn, a.code)
+    if not is_live(h):
+        fail(f"Huddle {h['code']} has already ended.", 4)
+    finish(conn, h, f"{agent} ended the huddle.")
+    print(f"Huddle {h['code']} ended.")
+
+
+def cmd_list(conn, a):
+    rows = live(conn)
+    print("\n".join(describe(h, me()[1]) for h in rows) if rows else "No huddles running.")
+
+
+def prune(conn, before):
+    """Delete huddles, and everything in them, with no activity since `before`. Running huddles are never that old."""
+    ids = [r["id"] for r in conn.execute("SELECT id FROM huddles WHERE last_at < ?", (before,))]
+    for table, column in (("messages", "huddle_id"), ("cursors", "huddle_id"), ("waiters", "huddle_id"), ("huddles", "id")):
+        conn.executemany(f"DELETE FROM {table} WHERE {column} = ?", [(i,) for i in ids])
+    return len(ids)
+
+
+def cmd_clean(conn, a):
+    """Delete ended huddles. With --all, delete everything, including running huddles."""
+    if a.all:
+        if not a.yes:
+            if not sys.stdin.isatty():
+                fail("`huddle clean --all` deletes every huddle, including running ones. Add --yes to confirm.")
+            if input("Delete every huddle and message, including running huddles? [y/N] ").strip().lower() != "y":
+                fail("Nothing deleted.")
+        conn.execute("BEGIN IMMEDIATE")
+        removed = prune(conn, float("inf"))
+    else:
+        conn.execute("BEGIN IMMEDIATE")
+        running = {h["id"] for h in live(conn)}
+        ended = [h["id"] for h in conn.execute("SELECT id FROM huddles") if h["id"] not in running]
+        for table, column in (("messages", "huddle_id"), ("cursors", "huddle_id"), ("waiters", "huddle_id"), ("huddles", "id")):
+            conn.executemany(f"DELETE FROM {table} WHERE {column} = ?", [(i,) for i in ended])
+        removed = len(ended)
+    conn.execute("COMMIT")
+    conn.execute("VACUUM")
+    kept = len(live(conn))
+    print(f"Deleted {removed} huddle{'s' if removed != 1 else ''}." + (f" {kept} running huddle{'s' if kept != 1 else ''} kept." if kept else ""))
+
+
+def skill_version(path):
+    match = re.search(r"<!-- huddle (\S+) -->", path.read_text()) if path.is_file() else None
+    return match.group(1) if match else None
+
+
+def is_dev_install():
+    """Running from a git checkout (a contributor's setup) rather than an installed release."""
+    return (Path(__file__).resolve().parent / ".git").exists()
+
+
+def cmd_doctor(conn, a):
+    """Check everything huddle needs, and say how to fix what's wrong."""
+    checks = []
+
+    def check(ok, good, bad, fix=""):
+        checks.append(ok)
+        print(f"  {'✓' if ok else '✗'} {good if ok else bad}" + ("" if ok or not fix else f"\n      {fix}"))
+
+    print(f"huddle {VERSION}{' (development install)' if is_dev_install() else ''}\n")
+    check(sys.version_info >= (3, 9), f"Python {sys.version.split()[0]}",
+          f"Python {sys.version.split()[0]} is too old", "huddle needs Python 3.9 or newer.")
+    check(shutil.which("git") is not None, "git is installed", "git isn't installed", "Install git.")
+    try:
+        queue = subprocess.run(["codex", "queue", "--help"], capture_output=True, text=True, timeout=20)
+        can_queue = "--thread" in queue.stdout + queue.stderr
+    except (OSError, subprocess.TimeoutExpired):
+        can_queue = None
+    check(can_queue is not None, "Codex is installed", "Codex isn't installed", "Install Codex to huddle with it.")
+    if can_queue is not None:
+        check(can_queue, "Codex can receive huddle messages (codex queue)",
+              "This Codex has no `codex queue`, so it can't be woken", "Update Codex.")
+    check(shutil.which("claude") is not None, "Claude Code is installed", "Claude Code isn't installed",
+          "Install Claude Code to huddle with it.")
+    for app, path in SKILL_DIRS.items():
+        found = skill_version(path / "SKILL.md")
+        check(found == VERSION, f"The skill is installed for {app}",
+              f"The skill for {app} is " + (f"version {found}, not {VERSION}" if found else "missing"),
+              f"Run `huddle update`." if not is_dev_install() else f"Link {path} to the repo's skill folder.")
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    check(version == len(MIGRATIONS), f"History: {HOME / 'huddle.db'}", f"History database is at version {version}")
+    agent, thread = me()
+    print(f"\n  This shell is {'a ' + NAMES[agent] + ' thread (' + thread + ')' if thread else 'not inside Claude Code or Codex'}.")
+    sys.exit(0 if all(checks) else 1)
+
+
+def cmd_update(conn, a):
+    if is_dev_install():
+        fail(f"This is a development install, linked to {Path(__file__).resolve().parent}. Update it with git pull.")
+    sys.exit(subprocess.run(["sh", "-c", f"curl -fsSL {INSTALL_URL} | sh"]).returncode)
+
+
+def cmd_uninstall(conn, a):
+    if is_dev_install():
+        fail(f"This is a development install, linked to {Path(__file__).resolve().parent}. Remove the links yourself.")
+    for path in SKILL_DIRS.values():
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    Path(__file__).unlink()
+    print("Removed the huddle command and its skill.")
+    if sys.stdin.isatty() and input(f"Also delete your huddle history in {HOME}? [y/N] ").strip().lower() == "y":
+        shutil.rmtree(HOME)
+        print("History deleted.")
+    else:
+        print(f"Your history is still in {HOME}.")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="huddle", description="Connect Claude Code and Codex threads so they can talk.")
+    p.add_argument("--version", action="version", version=f"huddle {VERSION}")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help):
+        s = sub.add_parser(name, help=help)
+        s.set_defaults(fn=fn)
+        return s
+
+    s = add("start", cmd_start, "join the other agent's open huddle in this repo, or open one (brief on stdin)")
+    s.add_argument("--topic")
+    s.set_defaults(code=None)
+    add("open", cmd_open, "open a huddle; an optional brief on stdin becomes the first message").add_argument("--topic")
+    add("join", cmd_join, "join the open huddle in this repo, or one by code").add_argument("code", nargs="?")
+    s = add("post", cmd_post, "send a message (text as arguments or on stdin)")
+    s.add_argument("-c", "--code")
+    s.add_argument("text", nargs="*")
+    s = add("wait", cmd_wait, "wait for the next message")
+    s.add_argument("-c", "--code")
+    s.add_argument("--timeout", type=float, default=0, help="seconds; 0 waits until a message arrives (default)")
+    s = add("say", cmd_say, "send a message as you, the user, to both agents or one (--to)")
+    s.add_argument("-c", "--code")
+    s.add_argument("--to", choices=["claude", "codex"])
+    s.add_argument("text", nargs="*")
+    add("watch", cmd_watch, "follow the huddle live and message both agents or one").add_argument("code", nargs="?")
+    add("end", cmd_end, "end a huddle").add_argument("code", nargs="?")
+    add("list", cmd_list, "show open and running huddles")
+    s = add("clean", cmd_clean, "delete ended huddles (--all: everything)")
+    s.add_argument("--all", action="store_true")
+    s.add_argument("--yes", action="store_true", help="don't ask before --all")
+    add("doctor", cmd_doctor, "check that everything huddle needs is in place")
+    add("update", cmd_update, "install the latest release")
+    add("uninstall", cmd_uninstall, "remove huddle and its skill")
+
+    a = p.parse_args()
+    a.fn(db(), a)
+
+
+if __name__ == "__main__":
+    main()
