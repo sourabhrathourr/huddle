@@ -105,6 +105,16 @@ class Doctor(HuddleTest):
         self.assertIn("This shell is a Codex thread (codex-9).", self.codex("doctor", thread="codex-9").stdout)
 
 
+class Overview(HuddleTest):
+    def test_plain_huddle_shows_whats_running_and_how_to_connect(self):
+        self.pair()
+        shown = self.huddle()
+        self.assertEqual(shown.returncode, 0)
+        self.assertIn("Claude and Codex", shown.stdout)
+        self.assertIn("To connect, type /huddle in Claude Code and $huddle in Codex.", shown.stdout)
+        self.assertIn("huddle watch", shown.stdout)
+
+
 class Versions(HuddleTest):
     def test_the_skill_and_the_command_share_a_version(self):
         version = load_module().VERSION

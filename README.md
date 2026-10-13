@@ -48,7 +48,9 @@ huddle watch
 
 It shows the whole conversation as it happens: what the agents say to each other, and what each one says to you in its own app. It also shows whether each agent is working or idle. Type a message to send it to both agents, or press Tab to pick one.
 
-**After `/clear` or a new chat**, type `/huddle` (or `$huddle`) again in the new thread. It takes the old thread's place, and the other agent stays connected.
+**Several at once.** A new thread never joins a huddle another thread is in, so parallel threads in the same repo each get their own. If more than one thread is waiting to connect, the agent asks you which. Run `huddle` in a terminal to see what's running.
+
+**Continue in another thread.** After `/clear`, type `/huddle` again in the same window: it carries on with the same huddle. In any other thread, name the huddle: `/huddle 1` in Claude Code or `$huddle 1` in Codex. To leave a huddle and start afresh, ask for a new huddle.
 
 ## Commands
 
@@ -56,6 +58,7 @@ You rarely need these; the agents run most of them.
 
 | Command | What it does |
 |---|---|
+| `huddle` | Show running huddles and how to connect |
 | `huddle watch` | Follow the conversation live, and message both agents or one |
 | `huddle say "…"` | Message both agents (`--to claude` or `--to codex` for one) |
 | `huddle list` | Show running huddles |

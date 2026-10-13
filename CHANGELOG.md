@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- `/huddle` in a new thread no longer takes over a huddle another thread is in. Before, a fresh Claude thread could take the seat of a parallel Claude thread in the same repo and send its brief into that pair's Codex thread. Now it joins a thread of the other app that's waiting in this repo, or opens a new huddle.
+- To continue a running huddle from another thread, type `/huddle N` or `$huddle N`. After `/clear`, Claude continues on its own, because it's the same window.
+- "Start a new huddle" leaves the current one and connects afresh.
+- When more than one thread is waiting to connect, the agent asks which one instead of picking the oldest.
+- Waiting threads now expire after 15 minutes instead of an hour.
+- Connecting names the other thread, e.g. "Joined huddle 2 with Codex (thread “Explain PR #1220 harness”)", and so do `huddle list` and plain `huddle`.
+- Codex is told when a huddle ends. Before, only Claude was.
+- Plain `huddle` shows what's running, how to connect and the main commands, instead of a usage error.
+
 ## 0.1.1
 
 - An agent no longer misses a message that arrived just before it posted. Posting used to mark everything as read.

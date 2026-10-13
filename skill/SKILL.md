@@ -11,7 +11,13 @@ A huddle connects this thread with another agent's thread. You are peers: there 
 
 ## Connect
 
-Run `huddle start`. It joins the other app's open huddle in this repo, or opens one if there isn't one. It also handles leftovers from `/clear`, closed windows and new chats, so never offer the user pairing options, codes or `huddle end` steps: run `huddle start` and follow its output. Never ask the user for a topic.
+Run `huddle start`, and add only what the user asked for:
+
+- **`/huddle` or `$huddle` alone, or "connect with Codex/Claude":** `huddle start`. It joins the other app's thread that's waiting in this repo, or opens a new huddle. It never takes over a huddle another thread is in.
+- **The user gives a number** (`/huddle 2`, "continue huddle 2"): `huddle start 2`. This joins huddle 2, or continues it in this thread in place of your app's earlier thread.
+- **The user asks for a new or fresh huddle** while this thread is connected: `huddle start --new`.
+
+Never ask the user for a topic, and never offer pairing options or `huddle end` steps: run the command and follow its output.
 
 - **Mid-conversation:** pass a short brief on stdin and a topic of 3–6 words. Cover the problem, the relevant file paths, what you know so far, and what you want the other agent's view on. They start with none of your context.
   ```bash
@@ -25,10 +31,11 @@ Run `huddle start`. It joins the other app's open huddle in this repo, or opens 
 Then read the output:
 
 - **"Huddle N is open"**: the other agent isn't connected yet. Start listening (see **Listening**), then make your reply to the user open with the join step on its own line, e.g. "Huddle 1 is open. Type `$huddle` in Codex to join." Until the other agent joins, never describe it as working on anything; your brief waits in the huddle for it. If the user gave a task, you can do your own part meanwhile, but the join step still comes first in every reply until the other agent joins.
-- **"Joined huddle N"**: if there's a brief, look at what it mentions and reply with `huddle post`. If there's none, tell the user you're connected and ready.
-- **"Rejoined huddle N"**: this thread took over from an earlier thread of your app (after `/clear`, a closed window or a new chat), and the other agent is still connected. Read the recent messages it prints, then carry on. Tell the user in one line that you're reconnected, and pass on its "If … doesn't answer" step.
-- **"Left huddle N: a newer one is waiting"**, followed by "Joined…": your old partner was gone and the user connected again. Treat it as "Joined".
-- **"This thread is already in huddle N"**: you're already connected. Carry on.
+- **"Joined huddle N with …"**: tell the user which thread you're connected to, using the name in parentheses when there is one, e.g. "Connected to Codex (thread “Explain PR #1220 harness”)." If there's a brief, look at what it mentions and reply with `huddle post`. If there's none, say you're ready.
+- **"Continued huddle N with …"**: this thread took over from an earlier thread of your app, and the other agent is still connected. Read the recent messages it prints, then carry on. Tell the user in one line which huddle and thread you're connected to, and pass on its "If … doesn't answer" step.
+- **"Left huddle N."**: you left your earlier huddle, as asked. Read on for the new connection.
+- **"This thread is already in huddle N"**: you're already connected. Carry on. If the user wanted a new huddle, run `huddle start --new`.
+- **Exit code 2, "… threads are waiting to connect"**: show the user the list it prints and ask which one, by number. Then run `huddle start N`.
 
 ## Talk
 
@@ -69,14 +76,14 @@ Use `User`, `Claude` and `Codex` as names, adding `→ name` for a message that 
 - "A newer wait took over" means a later wait replaced this one. Don't start another.
 - Exit code 4 means the huddle ended. Tell the user, and don't start another wait.
 
-**Codex:** don't wait. Messages arrive in your thread on their own, starting with `[Huddle N]`. Reply with `huddle post` and end your turn. If the user says you're missing messages, run `huddle wait --timeout 60` to fetch them.
+**Codex:** don't wait. Messages arrive in your thread on their own, starting with `[Huddle N]`. Reply with `huddle post` and end your turn. A message saying the huddle ended needs no reply and no command. If the user says you're missing messages, run `huddle wait --timeout 60` to fetch them.
 
 ## Ending
 
-Run `huddle end` only when the user asks. The user can also run `huddle end` from a terminal. After it ends, a new `huddle start` connects again.
+Run `huddle end` only when the user asks. The user can also run `huddle end` from a terminal. After it ends, a new `huddle start` connects again, and the other agent connects with `/huddle` or `$huddle` in its own thread.
 
 ## The user's terminal commands
 
 Mention these when they help: `huddle watch` (in its own terminal: follow the conversation live, see what each agent is doing, and message both agents or one), `huddle say "…"` (message both agents; `--to claude` or `--to codex` for one), `huddle end`, `huddle list`.
 
-<!-- huddle 0.1.1 -->
+<!-- huddle 0.1.2 -->

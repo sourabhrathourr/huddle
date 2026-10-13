@@ -32,6 +32,21 @@ FAKE_CODEX = textwrap.dedent("""\
 """)
 
 
+# Stands in for `ps`, so each test decides which Claude Code window a thread runs in: FAKE_CLAUDE_WINDOW=N puts
+# the calling huddle process under a `claude` process numbered 9000+N; without it there's no Claude process at all.
+FAKE_PS = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import os, subprocess
+    window = os.environ.get("FAKE_CLAUDE_WINDOW")
+    if window:
+        parent = subprocess.run(["/bin/ps", "-o", "ppid=", "-p", str(os.getppid())], capture_output=True,
+                                text=True).stdout.strip()  # what huddle starts its walk from
+        claude = 9000 + int(window)
+        print(f"{parent} {claude} Tue Oct 13 10:00:00 2026 /bin/zsh -c huddle")
+        print(f"{claude} 1 Tue Oct 13 09:00:00 2026 /usr/local/bin/claude --resume")
+""")
+
+
 def load_module():
     """The huddle command as a module, for testing its parts directly."""
     loader = importlib.machinery.SourceFileLoader("huddle_cli", str(SCRIPT))
@@ -49,6 +64,8 @@ class HuddleTest(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "codex").write_text(FAKE_CODEX)
         (bin_dir / "codex").chmod(0o755)
+        (bin_dir / "ps").write_text(FAKE_PS)
+        (bin_dir / "ps").chmod(0o755)
         self.log = self.tmp / "codex.log"
         self.log.touch()
         self.env = {

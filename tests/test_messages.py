@@ -52,6 +52,17 @@ class Delivery(HuddleTest):
         self.assertIn("careful with line 88", waited.stdout)
         self.assertNotIn("starting on the worker", waited.stdout, "a thread's own messages never come back")
 
+    def test_codex_is_told_when_the_huddle_ends(self):
+        self.huddle("end")
+        [told] = self.queued()
+        self.assertEqual(told["thread"], "codex-1")
+        self.assertIn("The user ended the huddle", told["message"])
+        self.assertIn("No reply needed", told["message"])
+
+    def test_codex_isnt_told_about_its_own_ending(self):
+        self.codex("end")
+        self.assertEqual(self.queued(), [])
+
     def test_a_newer_wait_takes_over_without_losing_messages(self):
         first = self.background("wait", agent="claude", thread="claude-1")
         second = self.background("wait", agent="claude", thread="claude-1")

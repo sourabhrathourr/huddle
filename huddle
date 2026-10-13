@@ -34,10 +34,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 INSTALL_URL = "https://raw.githubusercontent.com/sourabhrathourr/huddle/main/install.sh"
 
-INVITE_TTL = 3600  # an unjoined invite stays open this long
+INVITE_TTL = 15 * 60  # an unjoined invite stays open this long
 IDLE_TTL = 24 * 3600  # a huddle with no messages for this long is over
 POLL = 0.3  # seconds between checks while waiting
 KEEP_DAYS = 30  # huddles with no activity for this long are deleted
@@ -65,6 +65,32 @@ def me():
     return "you", None
 
 
+def window():
+    """The Claude Code process this thread runs in, as "pid@start time"; None outside Claude Code.
+    /clear keeps the process and starts a new thread, so a match means the same window, not a guess.
+    (Codex runs every thread in one app process, so there's no such signal for Codex.)"""
+    if me()[0] != "claude":
+        return None
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,ppid=,lstart=,args="], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 7)  # pid, ppid, five words of start time, command line
+        if len(parts) == 8:
+            procs[parts[0]] = (parts[1], " ".join(parts[2:7]), parts[7])
+    pid = str(os.getppid())
+    while pid in procs and pid not in ("0", "1"):
+        ppid, started, args = procs[pid]
+        words = args.split()
+        if os.path.basename(words[0]) == "claude" or any(w.endswith(("/claude", "claude-code/cli.js")) for w in words[1:2]):
+            return f"{pid}@{started}"
+        pid = ppid
+    return None
+
+
 # Each entry upgrades the database by one version (SQLite's user_version). Only ever append.
 MIGRATIONS = [
     [  # 1: huddles, messages, read positions, and the one wait each thread may run
@@ -88,6 +114,8 @@ MIGRATIONS = [
     ["ALTER TABLE messages ADD COLUMN recipient TEXT"],  # 2: NULL goes to everyone, else to one agent
     ["ALTER TABLE huddles ADD COLUMN opener_dir TEXT",  # 3: each seat's checkout
      "ALTER TABLE huddles ADD COLUMN joiner_dir TEXT"],
+    ["ALTER TABLE huddles ADD COLUMN opener_window TEXT",  # 4: each seat's Claude Code process (see window())
+     "ALTER TABLE huddles ADD COLUMN joiner_window TEXT"],
 ]
 
 
@@ -168,7 +196,8 @@ def peer_of(h, thread):
 
 def describe(h, thread=None):
     mins = int((time.time() - h["opened_at"]) // 60)
-    who = f"{NAMES[h['opener']]} and {NAMES[h['joiner']]}" if h["joiner"] else f"{NAMES[h['opener']]}, waiting for someone to join"
+    opener = named(h["opener"], h["opener_thread"])
+    who = f"{opener} and {named(h['joiner'], h['joiner_thread'])}" if h["joiner"] else f"{opener}, waiting for someone to join"
     mark = "  ← this thread" if thread and thread in (h["opener_thread"], h["joiner_thread"]) else ""
     return f"  {h['code']}  {h['topic'] or '(no topic)'}  · {who} · opened {mins} min ago · {h['repo']}{mark}"
 
@@ -285,30 +314,41 @@ def invites_from_other_app(conn, agent):
 
 
 APP_STEP = {"claude": "type /huddle in Claude Code", "codex": "type $huddle in Codex"}
+CONTINUE_STEP = {"claude": "type /huddle {code} in that Claude Code thread", "codex": "type $huddle {code} in that Codex thread"}
 
 
-def seat_to_take(conn, agent, thread):
-    """A paired huddle where another thread of this app, in this same checkout, holds this app's seat.
-    That thread is almost always gone (/clear, a closed window, a new chat), so this thread takes its place."""
-    here = checkout()
-    for h in reversed(live(conn, "AND joined_at IS NOT NULL AND repo = :repo", repo=repo_root())):
-        for side in ("opener", "joiner"):
-            if h[side] == agent and h[f"{side}_thread"] != thread and h[f"{side}_dir"] == here:
-                return h, side
+def seat_of(h, agent):
+    """The side ("opener" or "joiner") an app holds in a huddle."""
+    return "opener" if h["opener"] == agent else "joiner"
+
+
+def same_window_seat(conn, agent, thread):
+    """A running huddle whose seat for this app belongs to an earlier thread in this same Claude Code window,
+    replaced by /clear. Any other thread may still be in use, so it's never taken over without its number."""
+    here = window()
+    if not here:
+        return None
+    for h in reversed(live(conn, "AND joined_at IS NOT NULL")):
+        side = seat_of(h, agent)
+        if h[side] == agent and h[f"{side}_thread"] != thread and h[f"{side}_window"] == here:
+            return h, side
     return None
 
 
 def rejoin(conn, h, side, agent, thread, brief):
     conn.execute("BEGIN IMMEDIATE")
-    conn.execute(f"UPDATE huddles SET {side}_thread = ? WHERE id = ?", (thread, h["id"]))
+    conn.execute(f"UPDATE huddles SET {side}_thread = ?, {side}_dir = ?, {side}_window = ? WHERE id = ?",
+                 (thread, checkout(), window(), h["id"]))
     set_cursor(conn, h["id"], thread, post(conn, h, "huddle", f"{agent} reconnected from a new thread."))
     recent = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND sender != 'huddle' AND sent_at > ? "
                           "AND (recipient IS NULL OR recipient = ?) ORDER BY id DESC LIMIT 6",
                           (h["id"], time.time() - 3600, agent)).fetchall()[::-1]
     conn.execute("COMMIT")
-    peer = h["joiner"] if side == "opener" else h["opener"]
-    print(f"Rejoined huddle {h['code']} with {NAMES[peer]}, in place of an earlier {NAMES[agent]} thread.")
-    print(f"If {NAMES[peer]} doesn't answer, tell the user to {APP_STEP[peer]} to reconnect it.")
+    peer_side = "joiner" if side == "opener" else "opener"
+    peer = h[peer_side]
+    print(f"Continued huddle {h['code']} with {named(peer, h[f'{peer_side}_thread'])}, "
+          f"in place of an earlier {NAMES[agent]} thread.")
+    print(f"If {NAMES[peer]} doesn't answer, tell the user to {CONTINUE_STEP[peer].format(code=h['code'])} to reconnect it.")
     if recent:
         print("\nRecent messages:\n")
         for m in recent:
@@ -321,44 +361,73 @@ def rejoin(conn, h, side, agent, thread, brief):
         print("Your context was shared in the huddle.")
 
 
-def finish(conn, h, note):
+def finish(conn, h, ender, note):
+    """End a huddle. Claude learns it from its wait; Codex has no wait running, so it's told directly."""
     conn.execute("BEGIN IMMEDIATE")
     post(conn, h, "huddle", note)
     conn.execute("UPDATE huddles SET ended_at = ? WHERE id = ?", (time.time(), h["id"]))
     conn.execute("COMMIT")
+    for agent, thread in members(h):
+        if agent == "codex" and agent != ender:
+            who = "The user" if ender == "you" else NAMES[ender]
+            message = (f"[Huddle {h['code']}]\n\n{who} ended the huddle, so this thread is no longer connected to "
+                       f"Claude. No reply needed; carry on with what you were doing.")
+            try:
+                subprocess.run(["codex", "queue", "--thread", thread, "--message", message], capture_output=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # it finds out on its next `huddle post`
 
 
 def cmd_start(conn, a):
-    """Join the other app's open invite in this repo, or open one. Order between the two apps doesn't matter."""
+    """Connect this thread the way the user asked, and only that way:
+    - `start N`: huddle N. Join it if it's waiting for this app, or continue it in place of this app's earlier thread.
+    - `start --new`: leave this thread's huddle, then connect afresh.
+    - `start`: continue after /clear in the same Claude Code window; else join the one thread of the other app
+      waiting in this repo; else open a new huddle. A running huddle is never taken over on a guess:
+      the thread holding its seat may still be in use."""
     agent, thread = me()
     if not thread:
         fail("Run `huddle start` from inside Claude Code or Codex.")
-    invites = invites_from_other_app(conn, agent)
     current = [h for h in live(conn) if thread in (h["opener_thread"], h["joiner_thread"])]
-    if current:
-        # The other app inviting after this thread connected means its old partner is gone (/clear, closed
-        # window, new chat) and the user is connecting again: move to the new huddle.
-        h = current[-1]
-        if not any(i["opened_at"] > (h["joined_at"] or h["opened_at"]) for i in invites):
-            already_in(conn, thread)
-            return
-        finish(conn, h, f"{agent} left.")
-        print(f"Left huddle {h['code']}: a newer one is waiting.")
+    if current and not a.new and (not a.code or current[-1]["code"] == a.code):
+        already_in(conn, thread)
+        return
+    target = None
+    if a.code:
+        rows = live(conn, "AND code = :code", code=a.code)
+        if not rows:
+            fail(f"No running huddle {a.code}. Run `huddle list` to see the running ones.")
+        target = rows[-1]
+        if not target["joined_at"] and target["opener"] == agent:
+            fail(f"Huddle {a.code} is waiting for {PEER[agent]}, and was opened by another {NAMES[agent]} thread. "
+                 f"A huddle connects Claude Code with Codex.")
+    for h in current:
+        finish(conn, h, agent, f"{agent} left.")
+        print(f"Left huddle {h['code']}.")
     brief = read_stdin()
-    seat = None if invites else seat_to_take(conn, agent, thread)
-    if seat:
-        rejoin(conn, *seat, agent, thread, brief)
-    elif invites:
-        a.code = invites[0]["code"]
-        h = cmd_join(conn, a)
-        if brief:
-            agent, _ = me()
-            post(conn, h, agent, brief)
-            if not wake_codex(conn, h, thread):
-                print(UNREACHED, file=sys.stderr)
-            print("Your context was shared in the huddle.")
-    else:
-        cmd_open(conn, a, brief)
+    if target and target["joined_at"]:
+        rejoin(conn, target, seat_of(target, agent), agent, thread, brief)
+        return
+    if not target:
+        seat = None if a.new else same_window_seat(conn, agent, thread)
+        if seat:
+            rejoin(conn, *seat, agent, thread, brief)
+            return
+        invites = invites_from_other_app(conn, agent)
+        if len(invites) > 1:
+            fail(f"{len(invites)} {PEER[agent]} threads are waiting to connect. Ask the user which one, "
+                 f"then run `huddle start N`:\n" + "\n".join(describe(h) for h in invites), 2)
+        if not invites:
+            cmd_open(conn, a, brief)
+            return
+        target = invites[0]
+    a.code = target["code"]
+    h = cmd_join(conn, a)
+    if brief:
+        post(conn, h, agent, brief)
+        if not wake_codex(conn, h, thread):
+            print(UNREACHED, file=sys.stderr)
+        print("Your context was shared in the huddle.")
 
 
 def cmd_open(conn, a, brief=None):
@@ -369,17 +438,19 @@ def cmd_open(conn, a, brief=None):
         return
     brief = read_stdin() if brief is None else brief
     now = time.time()
+    here = window()
     conn.execute("BEGIN IMMEDIATE")
     prune(conn, now - KEEP_DAYS * 86400)
-    # An app's older unjoined invite in this repo is almost always left behind by /clear or a closed window.
-    conn.execute("UPDATE huddles SET ended_at = ? WHERE repo = ? AND opener = ? AND joined_at IS NULL "
-                 "AND ended_at IS NULL", (now, repo_root(), agent))
+    # An unjoined invite from an earlier thread in this same window was left behind by /clear.
+    if here:
+        conn.execute("UPDATE huddles SET ended_at = ? WHERE opener_window = ? AND joined_at IS NULL "
+                     "AND ended_at IS NULL", (now, here))
     taken = {h["code"] for h in live(conn)}
     code = next(str(n) for n in itertools.count(1) if str(n) not in taken)  # the lowest number not in use
     hid = conn.execute(
-        "INSERT INTO huddles (code, repo, topic, opener, opener_thread, opened_at, last_at, opener_dir) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (code, repo_root(), a.topic, agent, thread, now, now, checkout()),
+        "INSERT INTO huddles (code, repo, topic, opener, opener_thread, opened_at, last_at, opener_dir, opener_window) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, repo_root(), a.topic, agent, thread, now, now, checkout(), here),
     ).lastrowid
     if brief:
         set_cursor(conn, hid, thread, post(conn, {"id": hid}, agent, brief))
@@ -417,9 +488,9 @@ def cmd_join(conn, a):
     conn.execute("UPDATE huddles SET ended_at = ? WHERE opener_thread = ? AND joined_at IS NULL AND ended_at IS NULL",
                  (time.time(), thread))
     if not conn.execute(
-        "UPDATE huddles SET joiner = ?, joiner_thread = ?, joined_at = ?, last_at = ?, joiner_dir = ? "
+        "UPDATE huddles SET joiner = ?, joiner_thread = ?, joined_at = ?, last_at = ?, joiner_dir = ?, joiner_window = ? "
         "WHERE id = ? AND joined_at IS NULL",
-        (agent, thread, time.time(), time.time(), checkout(), h["id"]),
+        (agent, thread, time.time(), time.time(), checkout(), window(), h["id"]),
     ).rowcount:
         conn.execute("ROLLBACK")
         fail(f"Huddle {h['code']} was just joined by someone else.")
@@ -427,7 +498,8 @@ def cmd_join(conn, a):
     brief = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND sender != 'huddle' ORDER BY id", (h["id"],)).fetchall()
     conn.execute("COMMIT")
     peer = NAMES[h["opener"]]
-    print(f"Joined huddle {h['code']} with {peer}" + (f": {h['topic']}" if h["topic"] else "."))
+    print(f"Joined huddle {h['code']} with {named(h['opener'], h['opener_thread'])}"
+          + (f": {h['topic']}" if h["topic"] else "."))
     if brief:
         print(f"\n{peer}'s brief:\n")
         for m in brief:
@@ -539,6 +611,58 @@ def transcript(agent, thread, _found={}):
             return None
         _found[thread] = hits[-1]
     return _found[thread]
+
+
+def thread_label(agent, thread):
+    """The thread as the user knows it: its current title in the app, else the first thing the user typed there."""
+    path = transcript(agent, thread)
+    if not path:
+        return None
+    titles, prompt = [], None
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, path.stat().st_size - 1_000_000))  # titles are rewritten as the thread goes on: read the latest
+            titles = [o.get("customTitle") or o.get("aiTitle") for o in map(json_line, f)
+                      if o.get("type") in ("custom-title", "ai-title")]
+            f.seek(0)
+            for _, raw in zip(range(3000), f):
+                o = json_line(raw)
+                if agent == "claude" and o.get("type") == "user" and (o.get("origin") or {}).get("kind") == "human":
+                    content = (o.get("message") or {}).get("content")
+                    texts = [content] if isinstance(content, str) else [
+                        b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"]
+                elif agent == "codex" and (o.get("payload") or {}).get("role") == "user" and "user.text" in (
+                        (o["payload"].get("internal_chat_message_metadata_passthrough") or {}).get("content_item_kinds") or []):
+                    texts = [c.get("text", "") for c in o["payload"].get("content") or [] if isinstance(c, dict)]
+                else:
+                    continue
+                prompt = " ".join(" ".join(texts).split())
+                break
+    except OSError:
+        return None
+    if agent == "codex":
+        try:  # the names Codex shows in its thread list
+            with open(CODEX_HOME / "session_index.jsonl", "rb") as f:
+                titles = [o.get("thread_name") for o in map(json_line, f) if o.get("id") == thread]
+        except OSError:
+            pass
+    label = " ".join((titles[-1] if titles and titles[-1] else prompt or "").split())
+    if not label or label.startswith(("<", "/huddle", "$huddle")):
+        return None  # a thread that began with a command has nothing more telling to show
+    return label if len(label) <= 50 else label[:49].rstrip() + "…"
+
+
+def json_line(raw):
+    try:
+        o = json.loads(raw)
+    except ValueError:
+        return {}
+    return o if isinstance(o, dict) else {}
+
+
+def named(agent, thread):
+    label = thread_label(agent, thread)
+    return f"{NAMES[agent]} (thread “{label}”)" if label else NAMES[agent]
 
 
 def turn_event(agent, o):
@@ -896,8 +1020,23 @@ def cmd_end(conn, a):
     h = mine(conn, a.code) if thread else pick(conn, a.code)
     if not is_live(h):
         fail(f"Huddle {h['code']} has already ended.", 4)
-    finish(conn, h, f"{agent} ended the huddle.")
+    finish(conn, h, agent, f"{agent} ended the huddle.")
     print(f"Huddle {h['code']} ended.")
+
+
+def overview(conn):
+    """What a plain `huddle` shows: what's running, how to connect, and the commands people use."""
+    rows = live(conn)
+    print(f"huddle {VERSION}: Claude Code and Codex, talking to each other.\n")
+    print("Running:\n" + "\n".join(describe(h) for h in rows) if rows else "No huddles running.")
+    print("\nTo connect, type /huddle in Claude Code and $huddle in Codex.")
+    print("To continue huddle N in another thread, type /huddle N or $huddle N there.\n")
+    for command, what in (("watch", "follow the conversation live, and message both agents or one"),
+                          ('say "…"', "message both agents (--to claude or --to codex for one)"),
+                          ("list", "show running huddles"), ("end [N]", "end a huddle"),
+                          ("clean", "delete ended huddles"), ("doctor", "check your setup"),
+                          ("update", "install the latest release")):
+        print(f"  huddle {command:<10} {what}")
 
 
 def cmd_list(conn, a):
@@ -1007,16 +1146,17 @@ def cmd_uninstall(conn, a):
 def main():
     p = argparse.ArgumentParser(prog="huddle", description="Connect Claude Code and Codex threads so they can talk.")
     p.add_argument("--version", action="version", version=f"huddle {VERSION}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     def add(name, fn, help):
         s = sub.add_parser(name, help=help)
         s.set_defaults(fn=fn)
         return s
 
-    s = add("start", cmd_start, "join the other agent's open huddle in this repo, or open one (brief on stdin)")
+    s = add("start", cmd_start, "connect this thread: join the other app's waiting thread, or open a huddle (brief on stdin)")
+    s.add_argument("code", nargs="?", help="join or continue this huddle")
+    s.add_argument("--new", action="store_true", help="leave this thread's huddle and connect afresh")
     s.add_argument("--topic")
-    s.set_defaults(code=None)
     add("open", cmd_open, "open a huddle; an optional brief on stdin becomes the first message").add_argument("--topic")
     add("join", cmd_join, "join the open huddle in this repo, or one by code").add_argument("code", nargs="?")
     s = add("post", cmd_post, "send a message (text as arguments or on stdin)")
@@ -1040,7 +1180,7 @@ def main():
     add("uninstall", cmd_uninstall, "remove huddle and its skill")
 
     a = p.parse_args()
-    a.fn(db(), a)
+    a.fn(db(), a) if a.cmd else overview(db())
 
 
 if __name__ == "__main__":
