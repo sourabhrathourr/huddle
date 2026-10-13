@@ -128,9 +128,9 @@ main { padding: 0 24px; }
 .hero.split h1 {
   max-width: none;
   margin: 0;
-  font-size: clamp(40px, 5.8vw, 80px);
-  line-height: 1;
-  letter-spacing: -0.05em;
+  font-size: clamp(34px, 4.8vw, 60px);
+  line-height: 1.04;
+  letter-spacing: -0.045em;
 }
 .hero.split .lede { max-width: 580px; margin: 28px 0 0; font-size: 18px; }
 .hero.split .install { max-width: 900px; margin: 36px 0 0; }
@@ -315,5 +315,5 @@ main { padding: 0 24px; }
   .foot { padding: 24px 16px 32px; }
 }
 @media (max-width: 400px) {
-  .hero.split h1 { font-size: 38px; }
+  .hero.split h1 { font-size: 31px; }
 }
