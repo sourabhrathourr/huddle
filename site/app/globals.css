@@ -31,6 +31,9 @@ body {
   font-size: 16px;
   line-height: 1.6;
 }
+/* Text selection: a tint of the clay accent, pale on light paper and deep on dark. Selected text goes to full ink. */
+::selection { background: color-mix(in srgb, var(--claude) 24%, var(--anatomy-page)); color: var(--anatomy-strong); }
+:root[data-theme="dark"] ::selection { background: color-mix(in srgb, var(--claude) 34%, var(--anatomy-page)); }
 a { color: var(--anatomy-strong); text-decoration-color: var(--rule); text-underline-offset: 3px; }
 a:hover { text-decoration-color: currentColor; }
 code { font-family: var(--anatomy-mono); font-size: 0.88em; color: var(--anatomy-strong); }
