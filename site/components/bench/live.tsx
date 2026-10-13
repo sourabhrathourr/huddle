@@ -11,9 +11,9 @@ const AGENTS: Agent[] = ["claude", "codex"];
 const PULSE_WHO: Who[][] = [["you"], ["claude"], ["codex"], ["claude", "codex"]];
 const OPEN = "M-9999 -9999H9999V9999H-9999Z";
 
-type Nodes = Record<string, Element | null>;
+export type Nodes = Record<string, Element | null>;
 
-function find(root: Element) {
+export function find(root: Element) {
   const nodes: Nodes = {};
   root.querySelectorAll("[data-part]").forEach((node) => {
     nodes[node.getAttribute("data-part")!] = node;
@@ -39,7 +39,7 @@ function statusOf(pose: Pose, agent: Agent) {
   return "idle";
 }
 
-function apply(root: Element, nodes: Nodes, pose: Pose) {
+export function apply(root: Element, nodes: Nodes, pose: Pose) {
   // The gantry head, its hoist line and the gripper.
   put(nodes.head!, "transform", translateAlong(P, [pose.gantry, 0, 0]));
   const top = at([pose.gantry, 0, HOIST_Z]);

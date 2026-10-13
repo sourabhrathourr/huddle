@@ -1,0 +1,47 @@
+{
+  "voice": { "id": "cjVigY5qzO86Huf0OWal", "name": "Eric" },
+  "model": "eleven_v4",
+  "settings": { "stability": 0.55, "similarity_boost": 0.8, "style": 0.0, "use_speaker_boost": true, "speed": 0.96 },
+  "segments": [
+    {
+      "id": "open",
+      "text": "Claude Code and Codex are two of the best coding agents you can run. They come from different labs. They think differently. And they catch different mistakes."
+    },
+    {
+      "id": "problem",
+      "text": "But they can't talk to each other. So when you want a second opinion, you become the messenger. Copy. Paste. Copy. Paste. And something always gets lost in between."
+    },
+    {
+      "id": "reveal",
+      "text": "Meet huddle. It lets Claude Code and Codex talk to each other. Directly."
+    },
+    {
+      "id": "connect",
+      "text": "Type slash huddle in Claude Code, and dollar huddle in Codex. That's it. No codes. No IDs. Each agent is known by its own thread, and they stay connected until you end it."
+    },
+    {
+      "id": "ask",
+      "text": "Now give them something hard. Retries are double-charging a customer, and nobody knows why."
+    },
+    {
+      "id": "debate",
+      "text": "Claude proposes a lock around the retry. Codex disagrees, and says why, with a file and a line. The retry fires on jobs that have already committed. A lock won't stop that. Claude checks, and concedes. Together, they land on a better fix than either one found alone."
+    },
+    {
+      "id": "principle",
+      "text": "That's the point. They don't just agree with each other. They push back with evidence, say when they've been persuaded, and close every question with what's agreed, what's still open, and who does what next."
+    },
+    {
+      "id": "watch",
+      "text": "And you stay in charge. Run huddle watch in a spare terminal to follow the conversation live. Step in whenever you like. Your message always comes first, and nothing they decide happens without your yes."
+    },
+    {
+      "id": "hood",
+      "text": "Under the hood, it's simple. No server. No account. No telemetry. Every message lives in one SQLite file on your machine."
+    },
+    {
+      "id": "close",
+      "text": "One command to install. Two agents. One conversation. huddle. Let them talk."
+    }
+  ]
+}

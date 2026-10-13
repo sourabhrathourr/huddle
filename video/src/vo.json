@@ -1,0 +1,1397 @@
+{
+ "open": {
+  "hash": "378cb2730dbd",
+  "duration": 9.2,
+  "words": [
+   {
+    "w": "Claude",
+    "start": 0,
+    "end": 0.4
+   },
+   {
+    "w": "Code",
+    "start": 0.56,
+    "end": 0.72
+   },
+   {
+    "w": "and",
+    "start": 0.8,
+    "end": 0.88
+   },
+   {
+    "w": "Codex",
+    "start": 1.04,
+    "end": 1.52
+   },
+   {
+    "w": "are",
+    "start": 1.6,
+    "end": 1.76
+   },
+   {
+    "w": "two",
+    "start": 1.84,
+    "end": 1.92
+   },
+   {
+    "w": "of",
+    "start": 1.96,
+    "end": 2
+   },
+   {
+    "w": "the",
+    "start": 2.08,
+    "end": 2.16
+   },
+   {
+    "w": "best",
+    "start": 2.32,
+    "end": 2.56
+   },
+   {
+    "w": "coding",
+    "start": 2.64,
+    "end": 2.96
+   },
+   {
+    "w": "agents",
+    "start": 3.12,
+    "end": 3.28
+   },
+   {
+    "w": "you",
+    "start": 3.36,
+    "end": 3.44
+   },
+   {
+    "w": "can",
+    "start": 3.52,
+    "end": 3.6
+   },
+   {
+    "w": "run.",
+    "start": 3.68,
+    "end": 4.2
+   },
+   {
+    "w": "They",
+    "start": 4.48,
+    "end": 4.56
+   },
+   {
+    "w": "come",
+    "start": 4.64,
+    "end": 4.72
+   },
+   {
+    "w": "from",
+    "start": 4.8,
+    "end": 4.88
+   },
+   {
+    "w": "different",
+    "start": 4.96,
+    "end": 5.2
+   },
+   {
+    "w": "labs.",
+    "start": 5.28,
+    "end": 5.92
+   },
+   {
+    "w": "They",
+    "start": 6.08,
+    "end": 6.24
+   },
+   {
+    "w": "think",
+    "start": 6.36,
+    "end": 6.48
+   },
+   {
+    "w": "differently.",
+    "start": 6.56,
+    "end": 7.24
+   },
+   {
+    "w": "And",
+    "start": 7.44,
+    "end": 7.68
+   },
+   {
+    "w": "they",
+    "start": 7.76,
+    "end": 7.84
+   },
+   {
+    "w": "catch",
+    "start": 7.96,
+    "end": 8.08
+   },
+   {
+    "w": "different",
+    "start": 8.16,
+    "end": 8.4
+   },
+   {
+    "w": "mistakes.",
+    "start": 8.52,
+    "end": 9.2
+   }
+  ]
+ },
+ "problem": {
+  "hash": "290646ed37c0",
+  "duration": 11.84,
+  "words": [
+   {
+    "w": "But",
+    "start": 0,
+    "end": 0.08
+   },
+   {
+    "w": "they",
+    "start": 0.16,
+    "end": 0.24
+   },
+   {
+    "w": "can't",
+    "start": 0.32,
+    "end": 0.56
+   },
+   {
+    "w": "talk",
+    "start": 0.64,
+    "end": 0.88
+   },
+   {
+    "w": "to",
+    "start": 0.96,
+    "end": 1.04
+   },
+   {
+    "w": "each",
+    "start": 1.12,
+    "end": 1.2
+   },
+   {
+    "w": "other.",
+    "start": 1.28,
+    "end": 2
+   },
+   {
+    "w": "So",
+    "start": 2.08,
+    "end": 2.32
+   },
+   {
+    "w": "when",
+    "start": 2.4,
+    "end": 2.48
+   },
+   {
+    "w": "you",
+    "start": 2.52,
+    "end": 2.56
+   },
+   {
+    "w": "want",
+    "start": 2.64,
+    "end": 2.72
+   },
+   {
+    "w": "a",
+    "start": 2.8,
+    "end": 2.88
+   },
+   {
+    "w": "second",
+    "start": 3,
+    "end": 3.12
+   },
+   {
+    "w": "opinion,",
+    "start": 3.2,
+    "end": 3.96
+   },
+   {
+    "w": "you",
+    "start": 4,
+    "end": 4.08
+   },
+   {
+    "w": "become",
+    "start": 4.16,
+    "end": 4.4
+   },
+   {
+    "w": "the",
+    "start": 4.48,
+    "end": 4.56
+   },
+   {
+    "w": "messenger.",
+    "start": 4.6,
+    "end": 5.56
+   },
+   {
+    "w": "Copy.",
+    "start": 5.6,
+    "end": 6.613
+   },
+   {
+    "w": "Paste.",
+    "start": 6.907,
+    "end": 7.24
+   },
+   {
+    "w": "Copy.",
+    "start": 7.28,
+    "end": 8.293
+   },
+   {
+    "w": "Paste.",
+    "start": 8.587,
+    "end": 8.92
+   },
+   {
+    "w": "And",
+    "start": 8.96,
+    "end": 9.12
+   },
+   {
+    "w": "something",
+    "start": 9.36,
+    "end": 9.6
+   },
+   {
+    "w": "always",
+    "start": 9.68,
+    "end": 10
+   },
+   {
+    "w": "gets",
+    "start": 10.12,
+    "end": 10.24
+   },
+   {
+    "w": "lost",
+    "start": 10.32,
+    "end": 10.56
+   },
+   {
+    "w": "in",
+    "start": 10.64,
+    "end": 10.72
+   },
+   {
+    "w": "between.",
+    "start": 11.24,
+    "end": 11.84
+   }
+  ]
+ },
+ "reveal": {
+  "hash": "52460b65e83f",
+  "duration": 5.36,
+  "words": [
+   {
+    "w": "Meet",
+    "start": 0,
+    "end": 0.24
+   },
+   {
+    "w": "huddle.",
+    "start": 0.4,
+    "end": 1.28
+   },
+   {
+    "w": "It",
+    "start": 1.36,
+    "end": 1.44
+   },
+   {
+    "w": "lets",
+    "start": 1.56,
+    "end": 1.68
+   },
+   {
+    "w": "Claude",
+    "start": 1.76,
+    "end": 2.08
+   },
+   {
+    "w": "Code",
+    "start": 2.24,
+    "end": 2.4
+   },
+   {
+    "w": "and",
+    "start": 2.48,
+    "end": 2.56
+   },
+   {
+    "w": "Codex",
+    "start": 2.64,
+    "end": 3.12
+   },
+   {
+    "w": "talk",
+    "start": 3.24,
+    "end": 3.36
+   },
+   {
+    "w": "to",
+    "start": 3.4,
+    "end": 3.44
+   },
+   {
+    "w": "each",
+    "start": 3.52,
+    "end": 3.6
+   },
+   {
+    "w": "other.",
+    "start": 3.68,
+    "end": 4.32
+   },
+   {
+    "w": "Directly.",
+    "start": 4.52,
+    "end": 5.36
+   }
+  ]
+ },
+ "connect": {
+  "hash": "f53b578f0f6e",
+  "duration": 12.4,
+  "words": [
+   {
+    "w": "Type",
+    "start": 0,
+    "end": 0.24
+   },
+   {
+    "w": "slash",
+    "start": 0.4,
+    "end": 0.8
+   },
+   {
+    "w": "huddle",
+    "start": 0.84,
+    "end": 1.2
+   },
+   {
+    "w": "in",
+    "start": 1.28,
+    "end": 1.36
+   },
+   {
+    "w": "Claude",
+    "start": 1.44,
+    "end": 1.68
+   },
+   {
+    "w": "Code,",
+    "start": 1.76,
+    "end": 2.24
+   },
+   {
+    "w": "and",
+    "start": 2.32,
+    "end": 2.48
+   },
+   {
+    "w": "dollar",
+    "start": 2.72,
+    "end": 3.04
+   },
+   {
+    "w": "huddle",
+    "start": 3.12,
+    "end": 3.44
+   },
+   {
+    "w": "in",
+    "start": 3.52,
+    "end": 3.6
+   },
+   {
+    "w": "Codex.",
+    "start": 3.68,
+    "end": 4.64
+   },
+   {
+    "w": "That's",
+    "start": 4.72,
+    "end": 4.84
+   },
+   {
+    "w": "it.",
+    "start": 4.88,
+    "end": 5.44
+   },
+   {
+    "w": "No",
+    "start": 5.52,
+    "end": 5.6
+   },
+   {
+    "w": "codes.",
+    "start": 5.68,
+    "end": 6.4
+   },
+   {
+    "w": "No",
+    "start": 6.48,
+    "end": 6.56
+   },
+   {
+    "w": "IDs.",
+    "start": 6.64,
+    "end": 7.76
+   },
+   {
+    "w": "Each",
+    "start": 7.84,
+    "end": 8
+   },
+   {
+    "w": "agent",
+    "start": 8.08,
+    "end": 8.4
+   },
+   {
+    "w": "is",
+    "start": 8.48,
+    "end": 8.56
+   },
+   {
+    "w": "known",
+    "start": 8.64,
+    "end": 8.8
+   },
+   {
+    "w": "by",
+    "start": 8.88,
+    "end": 8.96
+   },
+   {
+    "w": "its",
+    "start": 9.08,
+    "end": 9.2
+   },
+   {
+    "w": "own",
+    "start": 9.28,
+    "end": 9.44
+   },
+   {
+    "w": "thread,",
+    "start": 9.52,
+    "end": 10.107
+   },
+   {
+    "w": "and",
+    "start": 10.133,
+    "end": 10.16
+   },
+   {
+    "w": "they",
+    "start": 10.24,
+    "end": 10.32
+   },
+   {
+    "w": "stay",
+    "start": 10.4,
+    "end": 10.56
+   },
+   {
+    "w": "connected",
+    "start": 10.8,
+    "end": 11.04
+   },
+   {
+    "w": "until",
+    "start": 11.2,
+    "end": 11.36
+   },
+   {
+    "w": "you",
+    "start": 11.4,
+    "end": 11.44
+   },
+   {
+    "w": "end",
+    "start": 11.52,
+    "end": 11.6
+   },
+   {
+    "w": "it.",
+    "start": 11.68,
+    "end": 12.4
+   }
+  ]
+ },
+ "ask": {
+  "hash": "110147dc309d",
+  "duration": 6.24,
+  "words": [
+   {
+    "w": "Now",
+    "start": 0,
+    "end": 0.16
+   },
+   {
+    "w": "give",
+    "start": 0.24,
+    "end": 0.4
+   },
+   {
+    "w": "them",
+    "start": 0.48,
+    "end": 0.56
+   },
+   {
+    "w": "something",
+    "start": 0.72,
+    "end": 0.88
+   },
+   {
+    "w": "hard.",
+    "start": 0.96,
+    "end": 2
+   },
+   {
+    "w": "Retries",
+    "start": 2.08,
+    "end": 2.64
+   },
+   {
+    "w": "are",
+    "start": 2.72,
+    "end": 2.88
+   },
+   {
+    "w": "double-charging",
+    "start": 2.96,
+    "end": 3.6
+   },
+   {
+    "w": "a",
+    "start": 3.64,
+    "end": 3.68
+   },
+   {
+    "w": "customer,",
+    "start": 3.76,
+    "end": 4.4
+   },
+   {
+    "w": "and",
+    "start": 4.52,
+    "end": 4.64
+   },
+   {
+    "w": "nobody",
+    "start": 4.72,
+    "end": 5.04
+   },
+   {
+    "w": "knows",
+    "start": 5.16,
+    "end": 5.32
+   },
+   {
+    "w": "why.",
+    "start": 5.36,
+    "end": 6.24
+   }
+  ]
+ },
+ "debate": {
+  "hash": "941aeb6c5331",
+  "duration": 18.4,
+  "words": [
+   {
+    "w": "Claude",
+    "start": 0,
+    "end": 0.32
+   },
+   {
+    "w": "proposes",
+    "start": 0.4,
+    "end": 0.8
+   },
+   {
+    "w": "a",
+    "start": 0.96,
+    "end": 1.04
+   },
+   {
+    "w": "lock",
+    "start": 1.12,
+    "end": 1.36
+   },
+   {
+    "w": "around",
+    "start": 1.44,
+    "end": 1.68
+   },
+   {
+    "w": "the",
+    "start": 1.72,
+    "end": 1.76
+   },
+   {
+    "w": "retry.",
+    "start": 2.04,
+    "end": 2.88
+   },
+   {
+    "w": "Codex",
+    "start": 2.96,
+    "end": 3.36
+   },
+   {
+    "w": "disagrees,",
+    "start": 3.44,
+    "end": 4.2
+   },
+   {
+    "w": "and",
+    "start": 4.24,
+    "end": 4.4
+   },
+   {
+    "w": "says",
+    "start": 4.52,
+    "end": 4.64
+   },
+   {
+    "w": "why,",
+    "start": 4.72,
+    "end": 5.24
+   },
+   {
+    "w": "with",
+    "start": 5.28,
+    "end": 5.36
+   },
+   {
+    "w": "a",
+    "start": 5.52,
+    "end": 5.653
+   },
+   {
+    "w": "file",
+    "start": 5.787,
+    "end": 5.92
+   },
+   {
+    "w": "and",
+    "start": 5.96,
+    "end": 6
+   },
+   {
+    "w": "a",
+    "start": 6.08,
+    "end": 6.12
+   },
+   {
+    "w": "line.",
+    "start": 6.16,
+    "end": 7.173
+   },
+   {
+    "w": "The",
+    "start": 7.227,
+    "end": 7.28
+   },
+   {
+    "w": "retry",
+    "start": 7.56,
+    "end": 7.84
+   },
+   {
+    "w": "fires",
+    "start": 8,
+    "end": 8.16
+   },
+   {
+    "w": "on",
+    "start": 8.24,
+    "end": 8.4
+   },
+   {
+    "w": "jobs",
+    "start": 8.56,
+    "end": 8.72
+   },
+   {
+    "w": "that",
+    "start": 8.8,
+    "end": 8.88
+   },
+   {
+    "w": "have",
+    "start": 9,
+    "end": 9.12
+   },
+   {
+    "w": "already",
+    "start": 9.2,
+    "end": 9.52
+   },
+   {
+    "w": "committed.",
+    "start": 9.96,
+    "end": 10.44
+   },
+   {
+    "w": "A",
+    "start": 10.48,
+    "end": 10.52
+   },
+   {
+    "w": "lock",
+    "start": 10.56,
+    "end": 10.8
+   },
+   {
+    "w": "won't",
+    "start": 10.84,
+    "end": 11.04
+   },
+   {
+    "w": "stop",
+    "start": 11.12,
+    "end": 11.36
+   },
+   {
+    "w": "that.",
+    "start": 11.44,
+    "end": 12.2
+   },
+   {
+    "w": "Claude",
+    "start": 12.24,
+    "end": 12.48
+   },
+   {
+    "w": "checks,",
+    "start": 12.56,
+    "end": 13.173
+   },
+   {
+    "w": "and",
+    "start": 13.227,
+    "end": 13.28
+   },
+   {
+    "w": "concedes.",
+    "start": 13.4,
+    "end": 14.44
+   },
+   {
+    "w": "Together,",
+    "start": 14.48,
+    "end": 15.08
+   },
+   {
+    "w": "they",
+    "start": 15.12,
+    "end": 15.2
+   },
+   {
+    "w": "land",
+    "start": 15.28,
+    "end": 15.44
+   },
+   {
+    "w": "on",
+    "start": 15.52,
+    "end": 15.64
+   },
+   {
+    "w": "a",
+    "start": 15.76,
+    "end": 15.84
+   },
+   {
+    "w": "better",
+    "start": 15.92,
+    "end": 16
+   },
+   {
+    "w": "fix",
+    "start": 16.08,
+    "end": 16.32
+   },
+   {
+    "w": "than",
+    "start": 16.4,
+    "end": 16.56
+   },
+   {
+    "w": "either",
+    "start": 16.64,
+    "end": 16.88
+   },
+   {
+    "w": "one",
+    "start": 16.96,
+    "end": 17.12
+   },
+   {
+    "w": "found",
+    "start": 17.2,
+    "end": 17.36
+   },
+   {
+    "w": "alone.",
+    "start": 17.44,
+    "end": 18.4
+   }
+  ]
+ },
+ "principle": {
+  "hash": "1dcdb9f3faf0",
+  "duration": 12.64,
+  "words": [
+   {
+    "w": "That's",
+    "start": 0,
+    "end": 0.24
+   },
+   {
+    "w": "the",
+    "start": 0.32,
+    "end": 0.4
+   },
+   {
+    "w": "point.",
+    "start": 0.48,
+    "end": 1.36
+   },
+   {
+    "w": "They",
+    "start": 1.44,
+    "end": 1.52
+   },
+   {
+    "w": "don't",
+    "start": 1.6,
+    "end": 1.76
+   },
+   {
+    "w": "just",
+    "start": 1.84,
+    "end": 1.92
+   },
+   {
+    "w": "agree",
+    "start": 2,
+    "end": 2.32
+   },
+   {
+    "w": "with",
+    "start": 2.4,
+    "end": 2.48
+   },
+   {
+    "w": "each",
+    "start": 2.56,
+    "end": 2.64
+   },
+   {
+    "w": "other.",
+    "start": 2.72,
+    "end": 3.36
+   },
+   {
+    "w": "They",
+    "start": 3.48,
+    "end": 3.6
+   },
+   {
+    "w": "push",
+    "start": 3.76,
+    "end": 3.92
+   },
+   {
+    "w": "back",
+    "start": 4.04,
+    "end": 4.16
+   },
+   {
+    "w": "with",
+    "start": 4.28,
+    "end": 4.4
+   },
+   {
+    "w": "evidence,",
+    "start": 4.48,
+    "end": 5.24
+   },
+   {
+    "w": "say",
+    "start": 5.28,
+    "end": 5.52
+   },
+   {
+    "w": "when",
+    "start": 5.56,
+    "end": 5.6
+   },
+   {
+    "w": "they've",
+    "start": 5.68,
+    "end": 5.84
+   },
+   {
+    "w": "been",
+    "start": 5.92,
+    "end": 6
+   },
+   {
+    "w": "persuaded,",
+    "start": 6.12,
+    "end": 6.92
+   },
+   {
+    "w": "and",
+    "start": 6.96,
+    "end": 7.04
+   },
+   {
+    "w": "close",
+    "start": 7.12,
+    "end": 7.52
+   },
+   {
+    "w": "every",
+    "start": 7.6,
+    "end": 7.84
+   },
+   {
+    "w": "question",
+    "start": 8.08,
+    "end": 8.32
+   },
+   {
+    "w": "with",
+    "start": 8.44,
+    "end": 8.56
+   },
+   {
+    "w": "what's",
+    "start": 8.64,
+    "end": 8.76
+   },
+   {
+    "w": "agreed,",
+    "start": 8.8,
+    "end": 9.56
+   },
+   {
+    "w": "what's",
+    "start": 9.6,
+    "end": 9.76
+   },
+   {
+    "w": "still",
+    "start": 9.84,
+    "end": 10
+   },
+   {
+    "w": "open,",
+    "start": 10.08,
+    "end": 10.68
+   },
+   {
+    "w": "and",
+    "start": 10.72,
+    "end": 10.88
+   },
+   {
+    "w": "who",
+    "start": 10.96,
+    "end": 11.04
+   },
+   {
+    "w": "does",
+    "start": 11.12,
+    "end": 11.36
+   },
+   {
+    "w": "what",
+    "start": 11.48,
+    "end": 11.6
+   },
+   {
+    "w": "next.",
+    "start": 11.68,
+    "end": 12.64
+   }
+  ]
+ },
+ "watch": {
+  "hash": "fd494a37f03f",
+  "duration": 13.6,
+  "words": [
+   {
+    "w": "And",
+    "start": 0,
+    "end": 0.24
+   },
+   {
+    "w": "you",
+    "start": 0.32,
+    "end": 0.56
+   },
+   {
+    "w": "stay",
+    "start": 0.64,
+    "end": 0.88
+   },
+   {
+    "w": "in",
+    "start": 0.96,
+    "end": 1.04
+   },
+   {
+    "w": "charge.",
+    "start": 1.12,
+    "end": 2.2
+   },
+   {
+    "w": "Run",
+    "start": 2.24,
+    "end": 2.48
+   },
+   {
+    "w": "huddle",
+    "start": 2.52,
+    "end": 2.8
+   },
+   {
+    "w": "watch",
+    "start": 2.92,
+    "end": 3.04
+   },
+   {
+    "w": "in",
+    "start": 3.12,
+    "end": 3.2
+   },
+   {
+    "w": "a",
+    "start": 3.28,
+    "end": 3.32
+   },
+   {
+    "w": "spare",
+    "start": 3.36,
+    "end": 3.6
+   },
+   {
+    "w": "terminal",
+    "start": 3.68,
+    "end": 4.08
+   },
+   {
+    "w": "to",
+    "start": 4.16,
+    "end": 4.24
+   },
+   {
+    "w": "follow",
+    "start": 4.32,
+    "end": 4.56
+   },
+   {
+    "w": "the",
+    "start": 4.6,
+    "end": 4.64
+   },
+   {
+    "w": "conversation",
+    "start": 4.72,
+    "end": 5.36
+   },
+   {
+    "w": "live.",
+    "start": 5.44,
+    "end": 6.28
+   },
+   {
+    "w": "Step",
+    "start": 6.32,
+    "end": 6.56
+   },
+   {
+    "w": "in",
+    "start": 6.64,
+    "end": 6.8
+   },
+   {
+    "w": "whenever",
+    "start": 6.907,
+    "end": 7.12
+   },
+   {
+    "w": "you",
+    "start": 7.16,
+    "end": 7.2
+   },
+   {
+    "w": "like.",
+    "start": 7.28,
+    "end": 8.04
+   },
+   {
+    "w": "Your",
+    "start": 8.08,
+    "end": 8.24
+   },
+   {
+    "w": "message",
+    "start": 8.52,
+    "end": 8.8
+   },
+   {
+    "w": "always",
+    "start": 8.88,
+    "end": 9.2
+   },
+   {
+    "w": "comes",
+    "start": 9.28,
+    "end": 9.52
+   },
+   {
+    "w": "first,",
+    "start": 9.84,
+    "end": 10.24
+   },
+   {
+    "w": "and",
+    "start": 10.32,
+    "end": 10.4
+   },
+   {
+    "w": "nothing",
+    "start": 10.56,
+    "end": 10.72
+   },
+   {
+    "w": "they",
+    "start": 10.8,
+    "end": 10.88
+   },
+   {
+    "w": "decide",
+    "start": 11,
+    "end": 11.44
+   },
+   {
+    "w": "happens",
+    "start": 11.48,
+    "end": 11.84
+   },
+   {
+    "w": "without",
+    "start": 12.04,
+    "end": 12.24
+   },
+   {
+    "w": "your",
+    "start": 12.32,
+    "end": 12.56
+   },
+   {
+    "w": "yes.",
+    "start": 12.64,
+    "end": 13.6
+   }
+  ]
+ },
+ "hood": {
+  "hash": "b53a92b994b0",
+  "duration": 9.6,
+  "words": [
+   {
+    "w": "Under",
+    "start": 0,
+    "end": 0.24
+   },
+   {
+    "w": "the",
+    "start": 0.28,
+    "end": 0.32
+   },
+   {
+    "w": "hood,",
+    "start": 0.4,
+    "end": 0.88
+   },
+   {
+    "w": "it's",
+    "start": 0.96,
+    "end": 1.12
+   },
+   {
+    "w": "simple.",
+    "start": 1.32,
+    "end": 2
+   },
+   {
+    "w": "No",
+    "start": 2.08,
+    "end": 2.24
+   },
+   {
+    "w": "server.",
+    "start": 2.32,
+    "end": 3.04
+   },
+   {
+    "w": "No",
+    "start": 3.12,
+    "end": 3.2
+   },
+   {
+    "w": "account.",
+    "start": 3.28,
+    "end": 4.08
+   },
+   {
+    "w": "No",
+    "start": 4.16,
+    "end": 4.24
+   },
+   {
+    "w": "telemetry.",
+    "start": 4.32,
+    "end": 5.52
+   },
+   {
+    "w": "Every",
+    "start": 5.6,
+    "end": 5.84
+   },
+   {
+    "w": "message",
+    "start": 5.92,
+    "end": 6.32
+   },
+   {
+    "w": "lives",
+    "start": 6.4,
+    "end": 6.56
+   },
+   {
+    "w": "in",
+    "start": 6.68,
+    "end": 6.8
+   },
+   {
+    "w": "one",
+    "start": 6.88,
+    "end": 7.12
+   },
+   {
+    "w": "SQLite",
+    "start": 7.2,
+    "end": 7.76
+   },
+   {
+    "w": "file",
+    "start": 7.92,
+    "end": 8.08
+   },
+   {
+    "w": "on",
+    "start": 8.16,
+    "end": 8.32
+   },
+   {
+    "w": "your",
+    "start": 8.4,
+    "end": 8.48
+   },
+   {
+    "w": "machine.",
+    "start": 8.56,
+    "end": 9.6
+   }
+  ]
+ },
+ "close": {
+  "hash": "3f37a0d0da01",
+  "duration": 6.96,
+  "words": [
+   {
+    "w": "One",
+    "start": 0,
+    "end": 0.16
+   },
+   {
+    "w": "command",
+    "start": 0.24,
+    "end": 0.64
+   },
+   {
+    "w": "to",
+    "start": 0.72,
+    "end": 0.8
+   },
+   {
+    "w": "install.",
+    "start": 1.08,
+    "end": 1.84
+   },
+   {
+    "w": "Two",
+    "start": 1.92,
+    "end": 2.08
+   },
+   {
+    "w": "agents.",
+    "start": 2.16,
+    "end": 3.12
+   },
+   {
+    "w": "One",
+    "start": 3.2,
+    "end": 3.36
+   },
+   {
+    "w": "conversation.",
+    "start": 3.44,
+    "end": 4.8
+   },
+   {
+    "w": "huddle.",
+    "start": 4.88,
+    "end": 5.68
+   },
+   {
+    "w": "Let",
+    "start": 5.76,
+    "end": 5.92
+   },
+   {
+    "w": "them",
+    "start": 6,
+    "end": 6.08
+   },
+   {
+    "w": "talk.",
+    "start": 6.16,
+    "end": 6.96
+   }
+  ]
+ }
+}

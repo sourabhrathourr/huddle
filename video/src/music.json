@@ -1,0 +1,41 @@
+{
+ "crossfade": 2,
+ "cues": [
+  {
+   "id": "unease",
+   "from": 0,
+   "length": 25.63,
+   "ending": false
+  },
+  {
+   "id": "lift",
+   "from": 23.633333333333333,
+   "length": 23.07,
+   "ending": false
+  },
+  {
+   "id": "debate",
+   "from": 44.7,
+   "length": 24.87,
+   "ending": false
+  },
+  {
+   "id": "agreed",
+   "from": 67.56666666666666,
+   "length": 20.6,
+   "ending": false
+  },
+  {
+   "id": "charge",
+   "from": 86.16666666666667,
+   "length": 17.2,
+   "ending": false
+  },
+  {
+   "id": "outro",
+   "from": 101.36666666666666,
+   "length": 22.97,
+   "ending": true
+  }
+ ]
+}

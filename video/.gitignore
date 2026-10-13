@@ -1,0 +1,5 @@
+node_modules
+out
+.remotion
+# Levelled from public/audio/music/raw by `npm run music`; no API call needed.
+public/audio/music/*.wav

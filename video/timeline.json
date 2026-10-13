@@ -1,0 +1,12 @@
+{
+  "scenes": [
+    { "id": "apart", "voice": [{ "segment": "open", "lead": 0.9 }, { "segment": "problem", "lead": 0.9 }], "tail": 0.8 },
+    { "id": "reveal", "voice": [{ "segment": "reveal", "lead": 0.7 }], "tail": 1.3 },
+    { "id": "connect", "voice": [{ "segment": "connect", "lead": 0.4 }], "tail": 0.9 },
+    { "id": "debate", "voice": [{ "segment": "ask", "lead": 0.4 }, { "segment": "debate", "lead": 0.7 }], "tail": 1.6 },
+    { "id": "principle", "voice": [{ "segment": "principle", "lead": 0.4 }], "tail": 1.1 },
+    { "id": "watch", "voice": [{ "segment": "watch", "lead": 0.4 }], "tail": 1.2 },
+    { "id": "hood", "voice": [{ "segment": "hood", "lead": 0.4 }], "tail": 2.2 },
+    { "id": "close", "voice": [{ "segment": "close", "lead": 0.6 }], "tail": 3.2 }
+  ]
+}

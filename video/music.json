@@ -1,0 +1,55 @@
+{
+  "crossfade": 2,
+  "style": "Minimal, elegant modern tech product film score. Soft felt piano, warm analog synth pads, gentle sub bass. Key of D major, 90 BPM. Clean, spacious, polished mix. No vocals.",
+  "cues": [
+    {
+      "id": "unease",
+      "from": {
+        "scene": "apart"
+      },
+      "prompt": "Opening. Sparse and contemplative, a little unresolved and restless: single felt piano notes over a quiet low drone, leaning to B minor. Even level from start to end, no fade in, no fade out.",
+      "seconds": 30
+    },
+    {
+      "id": "lift",
+      "from": {
+        "scene": "reveal"
+      },
+      "prompt": "A soft warm swell opens into brightness, like a reveal, then a gentle forward eighth-note synth pulse begins. Hopeful and light. Even level after the swell, no fade out."
+    },
+    {
+      "id": "debate",
+      "from": {
+        "scene": "debate"
+      },
+      "prompt": "Focused and thoughtful, two minds working through a problem: a soft ticking arpeggio pulse, light muted percussion, quiet tension building very slowly. Even level, no fade out.",
+      "seconds": 30
+    },
+    {
+      "id": "agreed",
+      "from": {
+        "segment": "debate",
+        "word": "better",
+        "offset": -0.4
+      },
+      "prompt": "Resolution: opens on a warm, satisfying major chord, then a calm, confident groove with soft piano and pads. Even level, no fade out."
+    },
+    {
+      "id": "charge",
+      "from": {
+        "scene": "watch"
+      },
+      "prompt": "Calm confidence, in control: a steady gentle pulse with a soft piano motif, light and assured. Even level, no fade out.",
+      "seconds": 24
+    },
+    {
+      "id": "outro",
+      "from": {
+        "scene": "hood"
+      },
+      "prompt": "Finale: warm and uplifting, fuller pads and piano building gently, then ending on one clean final chord that rings out over the last four seconds.",
+      "ending": true,
+      "seconds": 27
+    }
+  ]
+}

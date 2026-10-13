@@ -1,0 +1,25 @@
+{
+  "name": "huddle-launch-video",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render Launch out/raw.mp4 --crf=18 --audio-bitrate=256k",
+    "voice": "node scripts/voice.mjs",
+    "sfx": "node scripts/sfx.mjs",
+    "typecheck": "tsc --noEmit",
+    "music": "node scripts/music.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.535",
+    "geist": "1.7.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.535"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "typescript": "5.9"
+  }
+}
