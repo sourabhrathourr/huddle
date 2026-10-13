@@ -1,21 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { DARK, KEY } from "@/lib/theme";
+import { KEY } from "@/lib/theme";
 
-type Choice = "system" | "light" | "dark";
+type Choice = "light" | "dark";
 
 const CHOICES: { value: Choice; label: string; icon: React.ReactNode }[] = [
-  {
-    value: "system",
-    label: "System",
-    icon: (
-      <>
-        <rect x="2.5" y="3" width="11" height="7.5" rx="1.5" />
-        <path d="M6 13h4M8 10.5V13" />
-      </>
-    ),
-  },
   {
     value: "light",
     label: "Light",
@@ -35,37 +25,23 @@ const CHOICES: { value: Choice; label: string; icon: React.ReactNode }[] = [
 
 function read(): Choice {
   try {
-    const stored = localStorage.getItem(KEY);
-    return stored === "light" || stored === "dark" ? stored : "system";
+    return localStorage.getItem(KEY) === "dark" ? "dark" : "light";
   } catch {
-    return "system";
+    return "light";
   }
 }
 
-function apply(choice: Choice) {
-  const dark = choice === "dark" || (choice === "system" && window.matchMedia(DARK).matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-}
-
 export function ThemeSwitch() {
-  const [choice, setChoice] = React.useState<Choice>("system");
+  const [choice, setChoice] = React.useState<Choice>("light");
 
   React.useEffect(() => setChoice(read()), []);
 
-  React.useEffect(() => {
-    apply(choice);
-    if (choice !== "system") return;
-    const query = window.matchMedia(DARK);
-    const follow = () => apply("system");
-    query.addEventListener("change", follow);
-    return () => query.removeEventListener("change", follow);
-  }, [choice]);
-
   const pick = (next: Choice) => {
     setChoice(next);
+    document.documentElement.dataset.theme = next;
     try {
-      if (next === "system") localStorage.removeItem(KEY);
-      else localStorage.setItem(KEY, next);
+      if (next === "dark") localStorage.setItem(KEY, "dark");
+      else localStorage.removeItem(KEY);
     } catch {}
   };
 
