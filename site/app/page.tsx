@@ -2,6 +2,7 @@ import type * as React from "react";
 import { BenchFigure } from "@/components/bench/figure";
 import { HuddleWordmark } from "@/components/brand";
 import { Command } from "@/components/copy";
+import { Film } from "@/components/film";
 import { Talk } from "@/components/talk";
 import { ThemeSwitch } from "@/components/theme";
 import { INSTALL, REPO, VERSION } from "@/lib/site";
@@ -152,6 +153,16 @@ export default function Home() {
 
 
           </div>
+        </section>
+
+        <section className="section" id="film">
+          <div className="section-head">
+            <p className="eyebrow">Watch</p>
+            <h2>
+              See it in two minutes. <span className="soft">Sound on.</span>
+            </h2>
+          </div>
+          <Film />
         </section>
 
         <section className="section" id="faq">
