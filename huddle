@@ -34,7 +34,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 INSTALL_URL = "https://raw.githubusercontent.com/sourabhrathourr/huddle/main/install.sh"
 
 INVITE_TTL = 3600  # an unjoined invite stays open this long
@@ -303,7 +303,8 @@ def rejoin(conn, h, side, agent, thread, brief):
     conn.execute(f"UPDATE huddles SET {side}_thread = ? WHERE id = ?", (thread, h["id"]))
     set_cursor(conn, h["id"], thread, post(conn, h, "huddle", f"{agent} reconnected from a new thread."))
     recent = conn.execute("SELECT * FROM messages WHERE huddle_id = ? AND sender != 'huddle' AND sent_at > ? "
-                          "ORDER BY id DESC LIMIT 6", (h["id"], time.time() - 3600)).fetchall()[::-1]
+                          "AND (recipient IS NULL OR recipient = ?) ORDER BY id DESC LIMIT 6",
+                          (h["id"], time.time() - 3600, agent)).fetchall()[::-1]
     conn.execute("COMMIT")
     peer = h["joiner"] if side == "opener" else h["opener"]
     print(f"Rejoined huddle {h['code']} with {NAMES[peer]}, in place of an earlier {NAMES[agent]} thread.")
@@ -447,7 +448,7 @@ def cmd_post(conn, a):
     if not text:
         fail("Message is empty.")
     conn.execute("BEGIN IMMEDIATE")
-    set_cursor(conn, h["id"], thread, post(conn, h, agent, text))
+    post(conn, h, agent, text)  # leaves the read position alone: `wait` still owes this thread what arrived before
     conn.execute("COMMIT")
     if not wake_codex(conn, h, thread):
         print(UNREACHED, file=sys.stderr)

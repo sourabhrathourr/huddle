@@ -73,6 +73,16 @@ class NewThreads(HuddleTest):
         self.assertIn("for the new thread", self.claude("wait", "--timeout", "2", thread="claude-2").stdout)
         self.assertIn("This thread is already in huddle 1 with Claude.", self.codex("start").stdout)
 
+    def test_a_new_thread_only_sees_recent_messages_meant_for_it(self):
+        self.pair()
+        self.huddle("say", "--to", "codex", "only for codex")
+        self.huddle("say", "--to", "claude", "only for claude")
+        self.codex("post", "for both")
+        rejoined = self.claude("start", thread="claude-2")
+        self.assertNotIn("only for codex", rejoined.stdout)
+        self.assertIn("only for claude", rejoined.stdout)
+        self.assertIn("for both", rejoined.stdout)
+
     def test_a_new_codex_thread_takes_the_old_ones_seat(self):
         self.pair()
         self.assertIn("Rejoined huddle 1 with Claude", self.codex("start", thread="codex-2").stdout)

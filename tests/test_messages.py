@@ -44,6 +44,14 @@ class Delivery(HuddleTest):
         self.assertIn("first", queued["message"])
         self.assertIn("second", queued["message"])
 
+    def test_posting_does_not_skip_unread_messages(self):
+        self.codex("post", "careful with line 88")
+        self.claude("post", "starting on the worker")
+        waited = self.claude("wait", "--timeout", "2")
+        self.assertEqual(waited.returncode, 0)
+        self.assertIn("careful with line 88", waited.stdout)
+        self.assertNotIn("starting on the worker", waited.stdout, "a thread's own messages never come back")
+
     def test_a_newer_wait_takes_over_without_losing_messages(self):
         first = self.background("wait", agent="claude", thread="claude-1")
         second = self.background("wait", agent="claude", thread="claude-1")

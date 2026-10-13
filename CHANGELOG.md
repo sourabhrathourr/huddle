@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- An agent no longer misses a message that arrived just before it posted. Posting used to mark everything as read.
+- After `/clear` or a new chat, the recent messages a new thread sees no longer include notes you sent only to the other agent.
+
 ## 0.1.0
 
 First release.

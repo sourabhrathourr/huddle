@@ -79,4 +79,4 @@ Run `huddle end` only when the user asks. The user can also run `huddle end` fro
 
 Mention these when they help: `huddle watch` (in its own terminal: follow the conversation live, see what each agent is doing, and message both agents or one), `huddle say "…"` (message both agents; `--to claude` or `--to codex` for one), `huddle end`, `huddle list`.
 
-<!-- huddle 0.1.0 -->
+<!-- huddle 0.1.1 -->
