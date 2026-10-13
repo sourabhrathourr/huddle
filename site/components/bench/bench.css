@@ -1,0 +1,78 @@
+.bn {
+  --bn-claude: #d4683f;
+  --bn-codex: #3a72d8;
+  --bn-you: var(--anatomy-hi);
+}
+.iso:not([data-theme="light"]) .bn {
+  --bn-claude: #ec9068;
+  --bn-codex: #78a8ff;
+}
+
+/* The box the bench sits in: a step lighter than the page in light mode, a step darker (a recessed well) in dark.
+   No shadow, only the hairline. The drawing's paper is the box colour, so its fills match what's behind them. */
+.bn-card {
+  --bn-box: #fbfbf9;
+  --anatomy-paper: var(--bn-box);
+  padding: 48px 28px;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--bn-box);
+  overflow: hidden;
+}
+.iso:not([data-theme="light"]) .bn-card { --bn-box: #080808; }
+.bn-card .iso-svg { width: 100%; }
+
+/* Screens */
+.bn-bezel { fill: var(--anatomy-top); }
+.bn-glass { fill: var(--anatomy-shade-0); }
+.bn-glow { opacity: 0; filter: blur(5px); transition: opacity 0.5s var(--anatomy-ease); }
+.bn-glow[data-who="claude"] { fill: var(--bn-claude); }
+.bn-glow[data-who="codex"] { fill: var(--bn-codex); }
+[data-state="working"] > .bn-glow { opacity: 0.22; }
+[data-state="woken"] > .bn-glow { opacity: 0.12; }
+.bn-scan { fill: none; stroke: var(--anatomy-faint); stroke-width: 0.5px; vector-effect: non-scaling-stroke; opacity: 0.7; }
+.bn-text { fill: var(--anatomy-hi); font-family: var(--anatomy-mono); letter-spacing: 0.02em; }
+.bn-text[data-dim] { fill: var(--anatomy-mid); }
+.bn-text[data-strong] { font-weight: 600; }
+
+/* Trays, lamps and the bulkhead socket */
+.bn-slot { fill: var(--anatomy-shade-0); }
+.bn-lamp { opacity: 0; }
+.bn-lamp[data-who="claude"] { fill: var(--bn-claude); }
+.bn-lamp[data-who="codex"] { fill: var(--bn-codex); }
+.bn-socket { fill: var(--anatomy-shade-0); transition: fill 0.3s var(--anatomy-ease); }
+.bn-socket[data-live="on"] { fill: var(--anatomy-hi); }
+.bn-plate { fill: var(--anatomy-top); }
+
+/* Cards: one tab colour per sender */
+.bn-variant { display: none; }
+[data-who="you"] > .bn-variant[data-show="you"],
+[data-who="claude"] > .bn-variant[data-show="claude"],
+[data-who="codex"] > .bn-variant[data-show="codex"] { display: inline; }
+[data-who="you"] { --bn-tab: var(--anatomy-mid); }
+[data-who="claude"] { --bn-tab: var(--bn-claude); }
+[data-who="codex"] { --bn-tab: var(--bn-codex); }
+.bn-tab > .iso-fill,
+.bn-tab > .iso-top { fill: var(--bn-tab); }
+.bn-tab > .iso-shade { fill: color-mix(in srgb, var(--bn-tab) 78%, #000); }
+.bn-rider-top[data-who="claude"] path { fill: var(--bn-claude); }
+.bn-rider-top[data-who="codex"] path { fill: var(--bn-codex); }
+
+/* Cables and wake pulses */
+.bn-cord, .bn-cable { stroke-width: 1px; }
+.bn-cable-live { stroke-width: 1.4px; opacity: 0; transition: opacity 0.35s var(--anatomy-ease); }
+[data-live="on"] > .bn-cable-live { opacity: 0.85; }
+[data-part="cable-claude"] > .bn-cable-live { stroke: var(--bn-claude); }
+[data-part="cable-codex"] > .bn-cable-live { stroke: var(--bn-codex); }
+[data-part="cable-you"] > .bn-cable-live { stroke: var(--anatomy-hi); }
+[data-who="claude"] > .bn-pulse, [data-who="claude"] > .bn-pulse-halo { fill: var(--bn-claude); }
+[data-who="codex"] > .bn-pulse, [data-who="codex"] > .bn-pulse-halo { fill: var(--bn-codex); }
+[data-who="you"] > .bn-pulse, [data-who="you"] > .bn-pulse-halo { fill: var(--anatomy-hi); }
+.bn-pulse-halo { opacity: 0.28; filter: blur(2px); }
+.bn-hoist-line { stroke-width: 0.8px; }
+.bn-soft { opacity: 0.4; }
+
+@media (max-width: 640px) {
+  .bn-card { padding: 28px 0; }
+  .bn-card .iso-svg { width: 128%; margin-left: -14%; }
+}
