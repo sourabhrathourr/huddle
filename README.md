@@ -1,8 +1,8 @@
 # huddle
 
-Let Claude Code and Codex talk to each other, without you copying messages between them.
+Let Claude Code and Codex work together, without you copying messages between them.
 
-Type `/huddle` in Claude Code and `$huddle` in Codex. The two threads connect, and from then on they can brainstorm, review each other's work, split a task and agree on a plan, while you watch and steer either one at any time.
+Ask either one to bring in the other: "get Codex to review this PR", "have Claude write the tests". The agent starts the other one as a helper, gives it the task, reads its reply and reports back to you. It works in either direction, from the terminal or the desktop apps, and with as many helpers as the work needs. You can also connect two threads you already have open, with `/huddle` in Claude Code and `$huddle` in Codex. Either way you can watch every message and steer any agent at any time.
 
 ```
  ● You  to both · 14:02
@@ -36,7 +36,9 @@ You need macOS or Linux, Python 3.9 or newer (macOS already has it), git, [Claud
 
 ## Use
 
-**Connect.** Type `/huddle` in a Claude Code thread and `$huddle` in a Codex thread in the same repo, in either order. That's all: no codes or IDs. If you've already been discussing something, the agent writes the other one a brief, so it starts with your context. You can also say what you want: `/huddle review this PR with Codex`.
+**Ask for a helper.** In Claude Code or Codex, ask for the other agent: "ask Codex to review the retry change", "get Claude to check these migrations", "have two Codex helpers try different fixes". The agent starts a helper in the same folder, briefs it, and continues the conversation with it until it has what you asked for. Helpers keep their thread between messages, so a follow-up continues where they left off. They work on their own, with no approval prompts, and an agent asks a helper only what your request needs, so they never get stuck talking in a loop.
+
+**Connect two open threads.** Type `/huddle` in a Claude Code thread and `$huddle` in a Codex thread in the same repo, in either order. That's all: no codes or IDs. If you've already been discussing something, the agent writes the other one a brief, so it starts with your context. You can also say what you want: `/huddle review this PR with Codex`.
 
 **Talk.** Talk to either agent as usual. Ask one to check with the other ("ask Codex what it thinks"), or give them a task to work out together. They stay connected across topics, so you only connect once. They end the huddle only when you ask.
 
@@ -46,7 +48,9 @@ You need macOS or Linux, Python 3.9 or newer (macOS already has it), git, [Claud
 huddle watch
 ```
 
-It shows the whole conversation as it happens: what the agents say to each other, and what each one says to you in its own app. It also shows whether each agent is working or idle. Type a message to send it to both agents, or press Tab to pick one.
+It opens full screen and shows the whole conversation as it happens: what the agents and their helpers say to each other, and what each one says to you in its own app, with Markdown, code and tables laid out properly. Below the conversation, a status line shows what each agent and helper is doing ("working 1:16 · running pytest"). Type a message to send it. It goes to everyone, or, once helpers are around, to the agent you opened (a helper acts on whatever reaches it, so it never gets your messages by accident). Press Tab, or start with `@name`, to pick another.
+
+With several huddles running, it asks which one to show, listing each by its thread's title. Ctrl-N and Ctrl-P switch between them, and Esc brings the list back. Scroll with the arrow keys, PgUp and PgDn, or the mouse wheel; when you've scrolled up, new messages wait below instead of moving the page. `/stop NAME`, `/interrupt NAME` and `/end` control helpers and the huddle. `huddle watch 2` opens huddle 2 directly.
 
 **Several at once.** A new thread never joins a huddle another thread is in, so parallel threads in the same repo each get their own. If more than one thread is waiting to connect, the agent asks you which. Run `huddle` in a terminal to see what's running.
 
@@ -59,9 +63,12 @@ You rarely need these; the agents run most of them.
 | Command | What it does |
 |---|---|
 | `huddle` | Show running huddles and how to connect |
-| `huddle watch` | Follow the conversation live, and message both agents or one |
-| `huddle say "…"` | Message both agents (`--to claude` or `--to codex` for one) |
-| `huddle list` | Show running huddles |
+| `huddle watch [N]` | Follow huddles live, full screen, and message everyone or one agent |
+| `huddle say "…"` | Message everyone (`--to NAME` for one agent or helper) |
+| `huddle list` | Show running huddles, who's in them and what each helper is doing |
+| `huddle spawn codex\|claude "…"` | Start a helper with a task and print its reply (`--name`, `--cwd`, `--model`, `--bg`) |
+| `huddle send NAME "…"` | Message one member; for a helper, print its reply |
+| `huddle stop NAME` / `interrupt NAME` | Shut a helper down (a message starts it again), or stop its current turn |
 | `huddle end [N]` | End a huddle |
 | `huddle clean` | Delete ended huddles (`--all` deletes everything) |
 | `huddle doctor` | Check your setup |
@@ -71,18 +78,21 @@ You rarely need these; the agents run most of them.
 ## How it works
 
 - **State** lives in one SQLite file, `~/.huddle/huddle.db`. There's no server, no port and no account.
-- **Codex** is woken with `codex queue`, which adds the message to its thread as if you'd typed it, framed as a message from a colleague.
-- **Claude Code** keeps a `huddle wait` running in the background, which ends when a message arrives and wakes it.
-- **Identity** comes from each app's thread ID (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`), so you never pass names or IDs.
+- **Helpers** each have a small background process that drives the app through its own protocol: `codex app-server` for Codex, and `claude -p` with stream-json for Claude Code. Every message reaches the helper as a user turn, and the turn's final message is its reply. A helper's thread is an ordinary thread, so you can open it later with `codex resume` or `claude --resume`. An idle helper rests after 30 minutes and wakes on the next message.
+- **No loops.** A message an agent sends gets exactly one reply, and a reply never makes a new request. If a reply reaches a helper between tasks, its answer goes up to the agent that started it, and from there to you.
+- **Threads you opened**: Codex is woken with `codex queue`, which adds the message to its thread as if you'd typed it. Claude Code keeps a `huddle wait` running in the background, which ends when a message arrives and wakes it.
+- **Identity** comes from each app's thread ID (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`), or `HUDDLE_MEMBER` for a helper, so you never pass names or IDs.
 - **The watch** reads each app's session files to show what the agents say to you and whether they're working.
 
 Ended huddles are deleted automatically after 30 days. Nothing leaves your machine, and there's no telemetry. The history database does contain your conversations, so `huddle clean --all` deletes it whenever you like.
 
 ## Compatibility
 
-huddle relies on parts of Claude Code and Codex that aren't documented APIs: `codex queue`, the thread ID variables, and the session file formats. An update to either app can break something. If that happens, `huddle doctor` is the first place to look, and please [open an issue](https://github.com/sourabhrathourr/huddle/issues).
+huddle relies on parts of Claude Code and Codex that aren't stable APIs: `codex app-server` (marked experimental), `codex queue`, Claude Code's stream-json mode, the thread ID variables, and the session file formats. An update to either app can break something. If that happens, `huddle doctor` is the first place to look, and please [open an issue](https://github.com/sourabhrathourr/huddle/issues).
 
-Last tested with Claude Code 2.1.296 and Codex CLI 0.162.1. Windows isn't supported; use WSL.
+Helpers run without approval prompts: Codex helpers with `approvalPolicy: never` inside your sandbox setting, and Claude Code helpers in `auto` permission mode (set `HUDDLE_CLAUDE_PERMISSION_MODE` to choose another).
+
+Last tested with Claude Code 2.1.318 and Codex CLI 0.166.0. Windows isn't supported; use WSL.
 
 ## Development
 
@@ -92,11 +102,12 @@ ln -sf "$PWD/huddle" ~/.local/bin/huddle
 ln -sfn "$PWD/skill" ~/.agents/skills/huddle
 ln -sfn ~/.agents/skills/huddle ~/.claude/skills/huddle
 python3 -m unittest discover -s tests
+cargo build --release --manifest-path watch/Cargo.toml   # huddle-watch, the full-screen watch
 ```
 
-The command is a single file using only Python's standard library; please keep it that way. The skill (`skill/SKILL.md`) and the command change together: the skill quotes the command's output, and both carry the same version.
+The command is a single file using only Python's standard library; please keep it that way. The full-screen watch is a separate Rust program in `watch/`, built with [ratatui](https://ratatui.rs). It only reads huddle's database and sends through the `huddle` command, so the command works fully without it: `huddle watch` falls back to a simpler view built into the command (or use `HUDDLE_WATCH=python` to choose it). In a development checkout, `huddle watch` uses `watch/target/release/huddle-watch` once it's built. The skill (`skill/SKILL.md`) and the command change together: the skill quotes the command's output, and both carry the same version.
 
-To release, bump `VERSION` in `huddle` and the marker at the end of `skill/SKILL.md`, add a `CHANGELOG.md` entry, and push a `vX.Y.Z` tag. CI builds the release that `install.sh` downloads.
+To release, bump `VERSION` in `huddle`, `version` in `watch/Cargo.toml` and the marker at the end of `skill/SKILL.md`, add a `CHANGELOG.md` entry, and push a `vX.Y.Z` tag. CI builds huddle-watch for macOS and Linux and publishes the release that `install.sh` downloads.
 
 ## License
 

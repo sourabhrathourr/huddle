@@ -7,17 +7,47 @@ permissions:
   contents: write
 
 jobs:
+  watch:
+    # huddle-watch for each platform install.sh knows (see its `target=` lines).
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} --manifest-path watch/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: huddle-watch-${{ matrix.target }}
+          path: watch/target/${{ matrix.target }}/release/huddle-watch
+
   release:
+    needs: watch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check the tag matches the version in the command
-        run: test "$GITHUB_REF_NAME" = "v$(python3 huddle --version | awk '{ print $2 }')"
+      - name: Check the tag matches the version in the command and in huddle-watch
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(python3 huddle --version | awk '{ print $2 }')"
+          grep -q "^version = \"${GITHUB_REF_NAME#v}\"" watch/Cargo.toml
       - run: python3 -m unittest discover -s tests
       - run: scripts/package.sh dist
+      - uses: actions/download-artifact@v4
+        with:
+          path: builds
+      - name: Add each platform's huddle-watch
+        run: |
+          for dir in builds/huddle-watch-*; do
+            scripts/package-watch.sh dist "${dir#builds/huddle-watch-}" "$dir/huddle-watch"
+          done
       - name: Publish the release install.sh downloads
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '/^## / { if (p) exit; p = ($2 == v); next } p' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/huddle.tar.gz dist/SHA256SUMS --title "$GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md

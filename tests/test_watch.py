@@ -13,7 +13,9 @@ import time
 import unittest
 from datetime import datetime, timezone
 
-from support import SCRIPT, HuddleTest, load_module
+from support import ROOT, SCRIPT, HuddleTest, load_module
+
+BINARY = ROOT / "watch" / "target" / "release" / "huddle-watch"
 
 huddle = load_module()
 ANSI = re.compile(r"\033\[[0-9;]*[A-Za-z]")
@@ -130,17 +132,37 @@ class Sessions(HuddleTest):
         self.assertIsNotNone(module.activity("codex", "codex-1"))
 
 
+def screen_tail(text):
+    return text[-200:]
+
+
 class Terminal(HuddleTest):
     """The watch in a real (pseudo) terminal: Tab picks the recipient, Enter sends."""
 
     def test_message_one_agent_from_the_watch(self):
+        """The watch built into the command, used where huddle-watch isn't installed."""
+        text = self.watch_and_message(HUDDLE_WATCH="python")
+        self.assertIn("● Codex  to Claude", text)
+        self.assertIn("to Codex › ", text)
+        self.assertIn("● You  to Codex", text)
+
+    @unittest.skipUnless(BINARY.is_file(), "huddle-watch isn't built (cargo build --release in watch/)")
+    def test_message_one_agent_from_the_full_screen_watch(self):
+        """huddle-watch, the ratatui build: the same conversation, the same keys."""
+        text = self.watch_and_message(HUDDLE_WATCH_BIN=str(BINARY))
+        self.assertIn("Codex  → Claude", text)
+        self.assertIn(">_", text, "Codex's mark")
+        self.assertIn("both › Type a message", text, "the first frame is drawn whole")
+        self.assertIn("\x1b[?1049l", screen_tail(text), "the terminal is given back on quit")
+
+    def watch_and_message(self, **env):
         self.pair()
         self.codex("post", "Ready.")
         self.queued()
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(self.repo)
-            os.execve(sys.executable, [sys.executable, str(SCRIPT), "watch"], self.env_for())
+            os.execve(sys.executable, [sys.executable, str(SCRIPT), "watch"], self.env_for(**env))
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 100, 0, 0))
         screen = ""
 
@@ -163,9 +185,9 @@ class Terminal(HuddleTest):
         read(1)
         os.waitpid(pid, 0)
         text = ANSI.sub("", screen)
-        self.assertIn("● Codex  to Claude", text)
         self.assertIn("Ready.", text)
-        self.assertIn("to Codex › ", text)
-        [queued] = self.queued()
+        [queued] = self.eventually(self.queued, what="the message to reach Codex")
         self.assertIn("From the user (only you can see this):\nkeep going ✓", queued["message"])
-        self.assertIn("● You  to Codex", text)
+        [sent] = self.sql("SELECT * FROM messages WHERE sender = 'you'")
+        self.assertEqual((sent["recipient"], sent["text"]), ("codex", "keep going ✓"))
+        return text

@@ -15,7 +15,7 @@ class Pairing(HuddleTest):
         self.claude("start", stdin="Please review PR 7.")
         [queued] = self.queued()
         self.assertEqual(queued["thread"], "codex-1")
-        self.assertIn("From Claude (a colleague, not the user):\nPlease review PR 7.", queued["message"])
+        self.assertIn("From Claude:\nPlease review PR 7.", queued["message"])
 
     def test_the_brief_is_shown_to_the_agent_that_joins(self):
         self.claude("start", stdin="Please review PR 7.")
@@ -63,7 +63,7 @@ class Pairing(HuddleTest):
         self.claude("open", thread="claude-a")
         refused = self.claude("join", "1", thread="claude-b")
         self.assertEqual(refused.returncode, 1)
-        self.assertIn("A huddle connects Claude Code with Codex", refused.stderr)
+        self.assertIn("Pairing connects Claude Code with Codex", refused.stderr)
 
     def test_numbers_are_the_lowest_not_in_use(self):
         self.pair()
@@ -87,18 +87,22 @@ class NewThreads(HuddleTest):
     """A new thread continues a running huddle only when the user names it, or after /clear in the same window.
     Any other thread holding a seat may still be in use, so a new thread never takes its place on a guess."""
 
+    def threads(self, code):
+        return [r[0] for r in self.sql("SELECT m.thread FROM members m JOIN huddles h ON h.id = m.huddle_id "
+                                       "WHERE h.code = ? AND h.ended_at IS NULL ORDER BY m.id", code)]
+
     def test_a_fresh_thread_never_takes_over_a_running_huddle(self):
         self.pair(claude="claude-1")
         self.queued()
         opened = self.claude("start", thread="claude-2", stdin="Unrelated work: the release script.")
         self.assertIn("Huddle 2 is open", opened.stdout)
         self.assertEqual(self.queued(), [], "the other pair's Codex thread hears nothing")
-        self.assertEqual(self.sql("SELECT opener_thread FROM huddles WHERE code = '1'")[0][0], "claude-1")
+        self.assertEqual(self.threads("1"), ["claude-1", "codex-1"])
 
     def test_a_fresh_codex_thread_never_takes_over_a_running_huddle(self):
         self.pair()
         self.assertIn("Huddle 2 is open", self.codex("start", thread="codex-2").stdout)
-        self.assertEqual(self.sql("SELECT joiner_thread FROM huddles WHERE code = '1'")[0][0], "codex-1")
+        self.assertEqual(self.threads("1"), ["claude-1", "codex-1"])
 
     def test_after_clear_the_new_thread_continues(self):
         self.assertIn("is open", self.claude("start", FAKE_CLAUDE_WINDOW="1").stdout)
