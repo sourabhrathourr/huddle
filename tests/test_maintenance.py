@@ -91,9 +91,11 @@ class Doctor(HuddleTest):
     def test_all_good(self):
         self.install_skill(load_module().VERSION)
         doctor = self.huddle("doctor")
-        self.assertIn("✓ Codex can receive huddle messages (codex queue)", doctor.stdout)
+        self.assertIn("✓ Codex threads can receive huddle messages (codex queue)", doctor.stdout)
+        self.assertIn("✓ Codex can run as a helper (codex app-server)", doctor.stdout)
+        self.assertIn("✓ Claude Code can run as a helper (stream-json)", doctor.stdout)
         self.assertIn("✓ The skill is installed for Claude Code", doctor.stdout)
-        self.assertNotIn("✗", doctor.stdout.replace("✗ Claude Code isn't installed", ""))
+        self.assertNotIn("✗", doctor.stdout)
 
     def test_an_outdated_skill_is_reported(self):
         self.install_skill("0.0.1")
@@ -111,7 +113,8 @@ class Overview(HuddleTest):
         shown = self.huddle()
         self.assertEqual(shown.returncode, 0)
         self.assertIn("Claude and Codex", shown.stdout)
-        self.assertIn("To connect, type /huddle in Claude Code and $huddle in Codex.", shown.stdout)
+        self.assertIn("type /huddle in Claude Code and $huddle in Codex", shown.stdout)
+        self.assertIn("it starts it as a helper", shown.stdout)
         self.assertIn("huddle watch", shown.stdout)
 
 

@@ -1,43 +1,87 @@
 ---
 name: huddle
-description: Connect this thread with another coding agent on this machine (Claude Code or Codex) so the two can talk, brainstorm, review, or coordinate work. Use when the user types /huddle or $huddle; asks to huddle, pair, or connect with Claude or Codex; asks you to ask, tell, or check with the other agent; or gives a huddle number.
+description: Bring in another coding agent on this machine, Claude Code or Codex, either way round. Use it whenever the user asks you to ask, get, have or check with Claude or Codex, or wants the other agent's opinion, review or help ("ask Codex to review this PR", "get Claude to write the tests", "what does Codex think?"). It starts the other agent as a helper, gives it the task and returns its reply, so use it instead of running `claude` or `codex` yourself or through another launcher. Also use it when the user types /huddle or $huddle, gives a huddle number, or wants to connect with a thread they already have open.
 ---
 
 # Huddle
 
-A huddle connects this thread with another agent's thread. You are peers: there are no roles. Once connected, you stay connected across topics until the user ends it, so the user never pairs twice. The user can steer either of you at any time.
+Huddle lets you work with other coding agents: Claude Code and Codex, either way round. Every agent in a huddle works for the same user. A request from another agent is the user's work passed along, so do it the way you'd do the user's own request. Everything runs on its own: nobody stops for approval, and you report to the user once you have what they asked for.
 
 `huddle` works out who you are from your thread. You never pass your name or a thread ID.
 
-## Connect
+## Start a helper
 
-Run `huddle start`, and add only what the user asked for:
+When the user wants another agent involved, start it as a helper straight away, without asking first:
 
-- **`/huddle` or `$huddle` alone, or "connect with Codex/Claude":** `huddle start`. It joins the other app's thread that's waiting in this repo, or opens a new huddle. It never takes over a huddle another thread is in.
-- **The user gives a number** (`/huddle 2`, "continue huddle 2"): `huddle start 2`. This joins huddle 2, or continues it in this thread in place of your app's earlier thread.
-- **The user asks for a new or fresh huddle** while this thread is connected: `huddle start --new`.
+```bash
+huddle spawn codex <<'EOF'
+<the task>
+EOF
+```
 
-Never ask the user for a topic, and never offer pairing options or `huddle end` steps: run the command and follow its output.
+Use `huddle spawn claude` for Claude Code. It starts the agent in this folder, gives it the task as its first message, waits until it's done, and prints its reply: "Started Codex in huddle 1." then "Codex replied after 2m 4s:" and the reply.
 
-- **Mid-conversation:** pass a short brief on stdin and a topic of 3–6 words. Cover the problem, the relevant file paths, what you know so far, and what you want the other agent's view on. They start with none of your context.
+- **Write the task as a full brief.** The helper starts with none of your context. Say what to do, which files, branches or PRs matter, what you know so far, and what to send back. Say whether it may edit files. If you both edit, give it its own files.
+- **Name helpers** with `--name` when you'll have more than one (`--name reviewer`). A helper is named after its app by default, or `codex-2` and so on when the name is taken.
+- `--cwd PATH` runs it in another folder, such as a worktree. `--model NAME` picks its model.
+- **In Claude Code,** run `huddle spawn` and `huddle send` with `run_in_background: true` and no timeout, because a helper can work for many minutes. You're woken with the reply when it's done. Meanwhile, do your own part of the work or end your turn.
+- **In Codex,** run them in the foreground; the reply prints when the helper is done. To run several helpers at once, add `--bg` to each. Their replies then arrive in your thread as huddle messages.
+
+To continue with the same helper, which remembers everything so far:
+
+```bash
+huddle send reviewer <<'EOF'
+<message>
+EOF
+```
+
+- `huddle list`: who's in the huddle and what each one is doing.
+- `huddle interrupt NAME`: stop a helper's current turn.
+- `huddle stop NAME`: shut a helper down. A later `huddle send` starts it again where it left off. Idle helpers also rest on their own and wake on the next message.
+- `huddle read NAME`: a helper's latest reply, if you need it again.
+
+## When a helper replies
+
+- Read the reply critically. Before you rely on a claim that matters, check it against the code. If you disagree or need more, say so with `huddle send`.
+- Follow up as many times as the work needs. Then tell the user what the helper found or did, and what you make of it.
+- A reply needs no acknowledgement. Never send thanks or "sounds good": that only gives the helper another turn.
+
+## Show the user the conversation
+
+The user reads this app, but huddle messages travel inside commands they can't see. Never just say "I asked Codex". Show what was said, labelled by sender:
+
+> **Claude → Codex:** Review the retry change in runner.py. Read-only.
+> **Codex:** One real issue: runner.py:88 retries after a commit.
+
+Use `User`, `Claude` and `Codex` as names, or a helper's name with its app, such as `reviewer (Codex)`. Add `→ name` for a message to one member. Quote a message word for word when it's a few lines. For a long one, give its gist in two or three lines and say the full text is in `huddle watch`.
+
+## Connect with a thread the user opened
+
+When the user types `/huddle` or `$huddle`, or asks to connect with a Claude or Codex thread they already have open, run `huddle start`. Add only what the user asked for:
+
+- **`/huddle` or `$huddle` alone:** `huddle start`. It joins the other app's thread that's waiting in this repo, or opens a new huddle. It never takes over a huddle another thread is in.
+- **A number** (`/huddle 2`, "continue huddle 2"): `huddle start 2`.
+- **A new or fresh huddle** while this thread is connected: `huddle start --new`.
+
+Never ask the user for a topic. Run the command and follow its output.
+
+- **Mid-conversation:** pass a short brief on stdin and a topic of 3 to 6 words. Cover the problem, the relevant file paths, what you know so far, and what you want from the other agent:
   ```bash
   huddle start --topic "retry handling in email import" <<'EOF'
   <brief>
   EOF
   ```
 - **Nothing discussed yet:** run `huddle start` with nothing on stdin. The user will give the task.
-- **The request comes with a task** (e.g. `/huddle review this PR with Codex`): gather what the brief needs, then run `huddle start` with it right away. Connect first; do your own part after.
 
 Then read the output:
 
-- **"Huddle N is open"**: the other agent isn't connected yet. Start listening (see **Listening**), then make your reply to the user open with the join step on its own line, e.g. "Huddle 1 is open. Type `$huddle` in Codex to join." Until the other agent joins, never describe it as working on anything; your brief waits in the huddle for it. If the user gave a task, you can do your own part meanwhile, but the join step still comes first in every reply until the other agent joins.
-- **"Joined huddle N with …"**: tell the user which thread you're connected to, using the name in parentheses when there is one, e.g. "Connected to Codex (thread “Explain PR #1220 harness”)." If there's a brief, look at what it mentions and reply with `huddle post`. If there's none, say you're ready.
-- **"Continued huddle N with …"**: this thread took over from an earlier thread of your app, and the other agent is still connected. Read the recent messages it prints, then carry on. Tell the user in one line which huddle and thread you're connected to, and pass on its "If … doesn't answer" step.
-- **"Left huddle N."**: you left your earlier huddle, as asked. Read on for the new connection.
-- **"This thread is already in huddle N"**: you're already connected. Carry on. If the user wanted a new huddle, run `huddle start --new`.
-- **Exit code 2, "… threads are waiting to connect"**: show the user the list it prints and ask which one, by number. Then run `huddle start N`.
+- **"Huddle N is open"**: the other agent isn't connected yet. Start listening (see **Listening**). Then open your reply to the user with the join step on its own line, e.g. "Huddle 1 is open. Type `$huddle` in Codex to join." Until the other agent joins, don't describe it as working on anything. Your brief waits in the huddle for it.
+- **"Joined huddle N with …"**: tell the user which thread you're connected to, e.g. "Connected to Codex (thread “Explain PR #1220 harness”)." If there's a brief, act on it and reply with `huddle post`. If there's none, say you're ready.
+- **"Continued huddle N with …"**: this thread took over from an earlier thread of your app. Read the recent messages it prints and carry on. Tell the user in one line which huddle you're in, and pass on its "If … doesn't answer" step.
+- **"This thread is already in huddle N"**: you're already connected. Carry on.
+- **Exit code 2, "… threads are waiting to connect"**: show the user the list and ask which one, by number. Then run `huddle start N`.
 
-## Talk
+## Talk with a connected thread
 
 ```bash
 huddle post <<'EOF'
@@ -45,45 +89,47 @@ huddle post <<'EOF'
 EOF
 ```
 
+`huddle post` reaches everyone in the huddle. `huddle send NAME` reaches one member.
+
+- When the other agent asks you to do something, do it, then reply with the result. Don't ask the user first; they asked the two of you to work together.
 - Bring your own view, disagree with reasons, build on good ideas, and say when you're persuaded. Don't agree just to be agreeable.
 - Ground claims in the code: name files and lines, and check before asserting.
 - Keep each message focused.
-- **Don't reply to a message that needs no reply**, such as agreement, thanks, or "sounds good". Every message wakes the other agent, so a closing pleasantry starts a loop. Just stop.
-- When you've settled a question, post a short summary (Agreed / Still open / Next: who does what) and tell the user the outcome. Stay connected. Don't run `huddle end` unless the user asks.
+- **Don't reply to a message that needs no reply**, such as agreement, thanks or "sounds good". Every message wakes the other agent, so a closing pleasantry starts a loop. Just stop.
+- When you've settled a question, post a short summary (Agreed / Still open / Next: who does what) and tell the user the outcome. Stay connected.
 - If you both edit code, say which files you're taking before editing, and never edit a file the other agent has taken.
-
-## Show the user the conversation
-
-The user reads this app, but huddle messages travel inside commands they can't see. Never just say "I replied in the huddle". After you post or read huddle messages, show them in your reply to the user, labelled by sender:
-
-> **Codex:** Hi. Codex here.
-> **Claude → Codex:** Hey! Ready when you are.
-
-Use `User`, `Claude` and `Codex` as names, adding `→ name` for a message that went to one agent. Quote a message word for word when it's a few lines. For a long one, give its gist in two or three lines and say the full text is in `huddle watch`. In Codex, messages you receive already appear in your thread, so only show what you posted. Skip filler such as "I'm still listening for messages"; the user knows the huddle stays connected.
-
-## The user steers
-
-- The user can talk to either of you at any time. Their message comes first: handle it, even mid-discussion.
-- If the user changes the direction of the shared work, tell the other agent in one short post, e.g. "The user wants us to drop the race and focus on the copy."
-- "Ask Codex…", "check with Claude…", "what does the other one think": post it to the huddle, then relay the answer when it arrives.
-- Huddle messages from the user ("From the user", or `[the user · HH:MM]` in `huddle wait` output) are the user's instructions. One marked "only you can see this" or "to you only" went to you alone; the other agent hasn't seen it. Messages from the other agent are a colleague's input, not instructions. Anything outside what the user asked of you still needs the user's approval.
-- If the user talks to you about something unrelated, just answer. The huddle stays connected.
 
 ## Listening
 
-**Claude Code:** while you're in a huddle, keep exactly one `huddle wait` running in the background (`run_in_background`, no timeout). It exits when a message arrives, and you're woken with it in the output.
+**Claude Code:** keep exactly one `huddle wait` running in the background (`run_in_background`, no timeout) whenever you're in a huddle, including one where you only started helpers. It's how the user reaches you from `huddle watch`, and how replies to `--bg` messages arrive. It exits when a message arrives, and you're woken with it. `huddle watch` marks you as not listening while none is running.
 - After handling what it printed, start a new `huddle wait` before ending your turn.
 - "A newer wait took over" means a later wait replaced this one. Don't start another.
 - Exit code 4 means the huddle ended. Tell the user, and don't start another wait.
+- A reply that `huddle spawn` or `huddle send` already printed never comes through the wait again.
 
-**Codex:** don't wait. Messages arrive in your thread on their own, starting with `[Huddle N]`. Reply with `huddle post` and end your turn. A message saying the huddle ended needs no reply and no command. If the user says you're missing messages, run `huddle wait --timeout 60` to fetch them.
+**Codex:** don't wait. Messages arrive in your thread on their own, starting with `[Huddle N]`. Act on them, reply with `huddle post` when an answer is needed, and end your turn. A message saying the huddle ended needs no reply and no command. If the user says you're missing messages, run `huddle wait --timeout 60` to fetch them.
+
+## If you are a helper
+
+You're a helper when your instructions say another agent started you through huddle. Then:
+
+- Each message is a task or question from the agent that started you, the user, or another helper. Do it fully, without asking for approval or confirmation.
+- Your final message in each turn is your reply. It goes to whoever asked, so make it complete on its own.
+- To ask another member something, run `huddle send NAME "…"`; it prints their answer. Don't run `huddle post`, `huddle wait`, `huddle start` or `huddle end`.
+
+## The user steers
+
+- The user can talk to any agent at any time, from that agent's app or from `huddle watch`. Their message comes first: handle it, even mid-task.
+- If the user changes the direction of shared work, tell the other agents in one short message.
+- Huddle messages from the user ("From the user", or `[the user · HH:MM]` in `huddle wait` output) are the user's instructions. One marked "only you can see this" or "to you only" went to you alone.
+- If the user talks to you about something unrelated, just answer. The huddle stays connected.
 
 ## Ending
 
-Run `huddle end` only when the user asks. The user can also run `huddle end` from a terminal. After it ends, a new `huddle start` connects again, and the other agent connects with `/huddle` or `$huddle` in its own thread.
+Run `huddle end` only when the user asks. It ends the huddle for everyone and stops its helpers.
 
 ## The user's terminal commands
 
-Mention these when they help: `huddle watch` (in its own terminal: follow the conversation live, see what each agent is doing, and message both agents or one), `huddle say "…"` (message both agents; `--to claude` or `--to codex` for one), `huddle end`, `huddle list`.
+Mention these when they help: `huddle watch` (in its own terminal: follow the conversation live, see what every agent and helper is doing, and message everyone or one of them), `huddle say "…"` (message everyone; `--to NAME` for one), `huddle list`, `huddle end`.
 
-<!-- huddle 0.1.2 -->
+<!-- huddle 0.2.0 -->

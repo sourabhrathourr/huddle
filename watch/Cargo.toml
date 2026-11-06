@@ -1,0 +1,26 @@
+[package]
+name = "huddle-watch"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "The full-screen live view of huddle: every message between your agents, and what each one is doing"
+license = "MIT"
+
+[[bin]]
+name = "huddle-watch"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+rusqlite = { version = "0.32", features = ["bundled"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+serde_json = "1"
+unicode-width = "0.2"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
