@@ -3174,7 +3174,14 @@ def main():
     run.add_argument("member")
     run.set_defaults(fn=cmd_run)
 
-    a = p.parse_args()
+    # Before Python 3.12, words after an option ("spawn claude --name x the task") aren't added to a
+    # nargs="*" positional, so they come back as extras; they belong at the end of the text.
+    a, extra = p.parse_known_args()
+    if extra:
+        field = next((f for f in ("task", "text") if isinstance(getattr(a, f, None), list)), None)
+        if field is None or any(x.startswith("-") for x in extra):
+            p.error("unrecognized arguments: " + " ".join(extra))
+        setattr(a, field, getattr(a, field) + extra)
     conn = db()
     know_helper(conn)
     a.fn(conn, a) if a.cmd else overview(conn)
