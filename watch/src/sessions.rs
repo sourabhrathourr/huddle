@@ -100,11 +100,31 @@ pub fn stamp(o: &serde_json::Map<String, Value>) -> Option<f64> {
     chrono::DateTime::parse_from_rfc3339(t).ok().map(|d| d.timestamp_millis() as f64 / 1000.0)
 }
 
+/// What started a Claude Code turn you didn't type: a background task finishing ("background task finished: Run the
+/// tests", from its notification's summary), or anything else that woke it. Empty for a turn you started.
+fn woken_by(o: &serde_json::Map<String, Value>) -> String {
+    let origin = obj(o, "origin").map(|x| s(x, "kind").to_string()).unwrap_or_default();
+    if origin.is_empty() || origin == "human" {
+        return String::new();
+    }
+    if origin == "task-notification" {
+        let text = texts(obj(o, "message").and_then(|m| m.get("content"))).join("\n");
+        static SUMMARY: OnceLock<Regex> = OnceLock::new();
+        let summary = SUMMARY.get_or_init(|| Regex::new(r"(?s)<summary>(.*?)</summary>").unwrap());
+        let what = summary.captures(&text).map(|c| c[1].split_whitespace().collect::<Vec<_>>().join(" "));
+        return what.unwrap_or_else(|| "A background task finished".into());
+    }
+    format!("woken by {}", origin.replace('-', " "))
+}
+
 /// A huddle message an agent quoted in its reply to the user ("> **Codex:** …"): already on screen.
 fn relayed() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"(?m)^>\s*\*\*(?:User|Claude|Codex|[\w.-]+ \((?:Claude|Codex)\))\b[^\n]*\n?(?:>[^\n]*\n?)*").unwrap()
+        Regex::new(
+            r"(?m)^>\s*\*\*(?:User|Claude|Codex|Antigravity|[\w.-]+ \((?:Claude|Codex|Antigravity)\))\b[^\n]*\n?(?:>[^\n]*\n?)*",
+        )
+        .unwrap()
     })
 }
 
@@ -253,12 +273,13 @@ impl Direct {
         std::mem::take(&mut self.steps)
     }
 
-    /// A new turn: the marker that puts its work in the conversation.
-    fn begin(&mut self, ts: f64) -> Message {
+    /// A new turn: the marker that puts its work in the conversation. `why` names what started a turn you didn't
+    /// (a background task finishing): shown as its heading, so its work doesn't read as an answer to your last prompt.
+    fn begin(&mut self, ts: f64, why: String) -> Message {
         let id = next_id();
         self.step_turn = Some(id);
         self.pending_say = None;
-        Message { id, sender: self.name.clone(), recipient: Some(ACTIVITY.into()), text: String::new(), sent_at: ts, reply_to: None, steer: false }
+        Message { id, sender: self.name.clone(), recipient: Some(ACTIVITY.into()), text: why, sent_at: ts, reply_to: None, steer: false }
     }
 
     fn step(&mut self, ts: f64, kind: &str, title: String, detail: Option<String>, status: &str) -> Step {
@@ -408,7 +429,8 @@ impl Direct {
                 let before = self.turn_started(&o);
                 out.extend(self.claude(&o, ts));
                 if before {
-                    out.push(self.begin(ts));
+                    let why = woken_by(&o);
+                    out.push(self.begin(ts, why));
                 } else if s(&o, "type") == "system" && matches!(s(&o, "subtype"), "turn_duration" | "stop_hook_summary") {
                     self.pending_say = None; // its last words were its reply
                 }
@@ -418,7 +440,7 @@ impl Direct {
                 let empty = serde_json::Map::new();
                 let p = obj(&o, "payload").unwrap_or(&empty);
                 if s(&o, "type") == "event_msg" && s(p, "type") == "task_started" {
-                    out.push(self.begin(ts));
+                    out.push(self.begin(ts, String::new()));
                 }
                 if s(&o, "type") == "event_msg" && s(p, "type") == "item_completed" {
                     if let Some(item) = obj(p, "item") {
@@ -432,6 +454,7 @@ impl Direct {
     }
 
     /// Whether this Claude Code line starts a turn: a message to it that isn't a tool's result.
+    /// (What started it, when it wasn't you: see `woken_by`.)
     fn turn_started(&self, o: &serde_json::Map<String, Value>) -> bool {
         if s(o, "type") != "user" || o.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
             return false;

@@ -2,7 +2,7 @@
 
 use crate::db::{self, Huddle, Member, Message, Step};
 use crate::loader::Update;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::text::Line;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::{Command, Stdio};
@@ -15,6 +15,7 @@ pub fn app_name(agent: &str) -> &str {
     match agent {
         "claude" => "Claude",
         "codex" => "Codex",
+        "agy" => "Antigravity",
         other => other,
     }
 }
@@ -81,13 +82,16 @@ pub struct Feed {
     pub reads: HashMap<String, i64>,
     /// Each finished step as drawn, by (step, live view or not): drawing an old diff again every frame is slow.
     pub traced: crate::ui::Traced,
+    /// In the split view, how far up each column is scrolled (Claude's, Codex's), and how long it was when last drawn.
+    pub split_scroll: [usize; 2],
+    pub split_total: [usize; 2],
 }
 
 /// `Feed::to` set to this means everyone, chosen on purpose.
 pub const EVERYONE: &str = "*";
 
 impl Feed {
-    fn new(h: Huddle) -> Feed {
+    pub(crate) fn new(h: Huddle) -> Feed {
         let name = format!("Huddle {}", h.code);
         Feed {
             h,
@@ -107,6 +111,8 @@ impl Feed {
             listening: HashSet::new(),
             reads: HashMap::new(),
             traced: HashMap::new(),
+            split_scroll: [0, 0],
+            split_total: [0, 0],
         }
     }
 
@@ -215,7 +221,20 @@ pub struct App {
     pub open: Option<(String, String)>,
     started: bool,
     pub page: usize,
+    /// The split view: Claude's side on the left, Codex's on the right. Remembered between runs.
+    pub split: bool,
+    /// Whether the split view was drawn last frame (a narrow window shows one conversation), and which column the
+    /// scroll keys move: 0 Claude's, 1 Codex's.
+    pub split_shown: bool,
+    pub column: usize,
+    /// Where the split view's columns part, so the wheel scrolls the one it's over.
+    pub split_at: u16,
     results: (Sender<String>, Receiver<String>),
+}
+
+/// Where the watch remembers which view you chose: next to the huddle database.
+fn view_file() -> std::path::PathBuf {
+    crate::sessions::Paths::from_env().huddle_db.with_file_name("watch-view")
 }
 
 impl App {
@@ -239,6 +258,10 @@ impl App {
             open: None,
             started: false,
             page: 10,
+            split: std::fs::read_to_string(view_file()).map(|v| v.trim() == "split").unwrap_or(false),
+            split_shown: false,
+            column: 0,
+            split_at: 0,
             results: channel(),
         }
     }
@@ -311,6 +334,22 @@ impl App {
         self.zoom_scroll = 0;
     }
 
+    /// Switch between the conversation and the split view, and remember the choice.
+    pub fn set_split(&mut self, on: bool) {
+        self.split = on;
+        let _ = std::fs::write(view_file(), if on { "split\n" } else { "conversation\n" });
+        for f in &mut self.feeds {
+            f.scroll = 0;
+            f.split_scroll = [0, 0];
+            f.unseen = 0;
+        }
+        self.say(if on {
+            "Split view: Claude on the left, Codex on the right. ← → picks the column to scroll; ctrl+s for one conversation."
+        } else {
+            "One conversation. ctrl+s to split it: Claude on the left, Codex on the right."
+        });
+    }
+
     pub fn say(&mut self, text: impl Into<String>) {
         self.notice = Some((text.into(), Instant::now(), 6));
     }
@@ -323,7 +362,7 @@ impl App {
         let mut highlighted = self.picker_order().get(self.choice).map(|i| self.feeds[*i].h.id);
         while let Ok(batch) = self.updates.try_recv() {
             got = true;
-            for u in batch {
+            for mut u in batch {
                 let fresh = !self.feeds.iter().any(|f| f.h.id == u.h.id);
                 if fresh {
                     self.feeds.push(Feed::new(u.h.clone()));
@@ -333,7 +372,15 @@ impl App {
                     f.unseen += u.items.len();
                 }
                 f.h = u.h;
+                f.h.topic = f.h.topic.as_deref().map(clean);
                 f.crew = u.crew;
+                for m in &mut f.crew.all {
+                    m.state = m.state.as_deref().map(clean);
+                    m.activity = m.activity.as_deref().map(clean);
+                }
+                for m in &mut u.items {
+                    m.text = clean(&m.text);
+                }
                 // in time order across reads too: a session record can arrive after newer messages
                 let newest = f.items.last().map(|m| m.sent_at).unwrap_or(f64::MIN);
                 let late = u.items.iter().any(|m| m.sent_at < newest);
@@ -342,7 +389,9 @@ impl App {
                     f.items.sort_by(|a, b| a.sent_at.partial_cmp(&b.sent_at).unwrap_or(std::cmp::Ordering::Equal));
                     f.cache.clear(); // drawn again in the new order
                 }
-                for step in u.steps {
+                for mut step in u.steps {
+                    step.title = clean(&step.title);
+                    step.detail = step.detail.as_deref().map(clean);
                     if step.kind == "dropped" {
                         f.steps.remove(&step.id); // its words turned out to be the answer, shown as a message
                         f.traced.retain(|(id, _), _| *id != step.id);
@@ -355,10 +404,10 @@ impl App {
                     f.acts = acts;
                 }
                 if let Some(name) = u.name {
-                    f.name = name;
+                    f.name = clean(&name);
                 }
                 if let Some(titles) = u.titles {
-                    f.titles = titles;
+                    f.titles = titles.into_iter().map(|(k, v)| (k, clean(&v))).collect();
                 }
                 f.reads = u.reads.into_iter().collect();
                 if let Some(listening) = u.listening {
@@ -448,6 +497,18 @@ impl App {
                 }
                 true
             }
+            Event::Mouse(m) if !self.picking && !self.agents && !self.help => {
+                let lines = |s: usize| s + 3;
+                if self.split_shown && self.zoom.is_none() {
+                    self.column = usize::from(m.column > self.split_at);
+                }
+                match m.kind {
+                    MouseEventKind::ScrollUp => self.scroll(lines),
+                    MouseEventKind::ScrollDown => self.scroll(|s| s.saturating_sub(3)),
+                    _ => {}
+                }
+                true
+            }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if self.help {
                     // any key closes the list of keys; Ctrl-C still quits
@@ -517,6 +578,7 @@ impl App {
                     self.current = Some(ids[(i + step) % ids.len()]);
                 }
             }
+            KeyCode::Char('s') if ctrl => self.set_split(!self.split),
             KeyCode::Char('u') if ctrl => self.typed.clear(),
             KeyCode::Char('w') if ctrl => {
                 let trimmed = self.typed.trim_end().to_string();
@@ -539,12 +601,19 @@ impl App {
                     let choices = f.choices();
                     let i = choices.iter().position(|c| *c == f.target()).unwrap_or(0);
                     let next = choices[(if back { i + choices.len() - 1 } else { i + 1 }) % choices.len()].clone();
+                    // messaging one side, the scroll keys move its column in the split view
+                    let side = next.as_ref().map(|n| f.crew.agent(n));
                     f.to = Some(next.unwrap_or_else(|| EVERYONE.to_string()));
+                    if let Some(at) = side.and_then(|a| AGENTS.iter().position(|x| *x == a)) {
+                        self.column = at;
+                    }
                 }
             }
             KeyCode::Backspace => {
                 self.typed.pop();
             }
+            KeyCode::Left if self.split_shown && self.zoom.is_none() => self.column = 0,
+            KeyCode::Right if self.split_shown && self.zoom.is_none() => self.column = 1,
             KeyCode::Up => self.scroll(|s| s + 1),
             KeyCode::Down => self.scroll(|s| s.saturating_sub(1)),
             KeyCode::PageUp => self.scroll(|s| s + page),
@@ -563,9 +632,15 @@ impl App {
             self.zoom_scroll = f(self.zoom_scroll);
             return;
         }
+        let (split, column) = (self.split_shown, self.column);
         if let Some(feed) = self.feed_mut() {
-            feed.scroll = f(feed.scroll);
-            if feed.scroll == 0 {
+            // in the split view, only the column chosen with ← →
+            if split {
+                feed.split_scroll[column] = f(feed.split_scroll[column]);
+            } else {
+                feed.scroll = f(feed.scroll);
+            }
+            if (split && feed.split_scroll == [0, 0]) || (!split && feed.scroll == 0) {
                 feed.unseen = 0;
             }
         }
@@ -580,6 +655,7 @@ impl App {
         }
         let Some(f) = self.feed_mut() else { return };
         f.scroll = 0;
+        f.split_scroll = [0, 0];
         f.unseen = 0;
         let (code, ended, crew) = (f.h.code.clone(), f.ended, f.crew.clone());
         let to = self.zoom.clone().or_else(|| self.feed().and_then(|f| f.target())); // zoomed in, you talk to that agent
@@ -635,6 +711,12 @@ impl App {
     fn command(&mut self, code: &str, ended: bool, crew: &Crew, command: &str) {
         let (word, arg) = command.split_once(' ').map(|(w, a)| (w, a.trim())).unwrap_or((command, ""));
         match word {
+            "view" => match arg {
+                "split" => self.set_split(true),
+                "conversation" | "one" => self.set_split(false),
+                "" => self.set_split(!self.split),
+                _ => self.say("/view split · /view conversation (ctrl+s switches too)"),
+            },
             "end" if ended => self.say("This huddle has already ended."),
             "end" => self.run(vec!["end".into(), code.into()], None),
             "stop" | "interrupt" => {
@@ -652,7 +734,7 @@ impl App {
                     }
                 }
             }
-            _ => self.say("Commands: /stop NAME · /interrupt NAME · /end"),
+            _ => self.say("Commands: /stop NAME · /interrupt NAME · /view · /end"),
         }
     }
 
@@ -665,6 +747,7 @@ impl App {
             cmd.args(&args)
                 .env_remove("CLAUDE_CODE_SESSION_ID")
                 .env_remove("CODEX_THREAD_ID")
+                .env_remove("ANTIGRAVITY_CONVERSATION_ID")
                 .env_remove("HUDDLE_MEMBER")
                 .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
                 .stdout(Stdio::piped())
@@ -695,6 +778,63 @@ impl App {
     }
 }
 
+/// Text as a terminal would leave it, safe to draw: colour and other escape codes removed; a line rewritten with
+/// carriage returns (a progress bar) as its last version; tabs as spaces; no other control characters. Drawn raw,
+/// any of these moves the cursor where the screen doesn't expect it, and stray words stay behind.
+pub fn clean(text: &str) -> String {
+    // \u{1f} is kept: it parts a command's description from the command in a step's title
+    if !text.chars().any(|c| c.is_control() && c != '\n' && c != '\u{1f}') {
+        return text.to_string();
+    }
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters, then one final byte from @ to ~
+            Some('[') => {
+                for x in chars.by_ref() {
+                    if ('@'..='~').contains(&x) {
+                        break;
+                    }
+                }
+            }
+            // OSC (a title, a link): until BEL or ESC \
+            Some(']') => {
+                while let Some(x) = chars.next() {
+                    if x == '\u{7}' || (x == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::with_capacity(plain.len());
+    for (i, line) in plain.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let last = line.rsplit('\r').find(|part| !part.is_empty()).unwrap_or("");
+        let mut column = 0;
+        for c in last.chars() {
+            if c == '\t' {
+                let pad = 4 - column % 4;
+                out.extend(std::iter::repeat_n(' ', pad));
+                column += pad;
+            } else if !c.is_control() || c == '\u{1f}' {
+                out.push(c);
+                column += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The main checkout of the repo the watch runs in, so a repo and its worktrees count as one.
 pub fn repo_root() -> String {
     Command::new("git")
@@ -714,6 +854,16 @@ pub fn repo_root() -> String {
 mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+
+    #[test]
+    fn text_is_cleaned_of_what_would_move_the_cursor() {
+        assert_eq!(clean("plain\nlines"), "plain\nlines");
+        assert_eq!(clean("Updating files:  83%\rUpdating files: 100%\r\ndone"), "Updating files: 100%\ndone");
+        assert_eq!(clean("\u{1b}[1;32mSuccess\u{1b}[0m and \u{1b}]8;;https://x\u{7}a link\u{1b}]8;;\u{1b}\\"), "Success and a link");
+        assert_eq!(clean("253\tconst a = 1;\n\tb"), "253 const a = 1;\n    b");
+        assert_eq!(clean("bell\u{7} and nul\u{0}"), "bell and nul");
+        assert_eq!(clean("Run the tests\u{1f}cargo test\r"), "Run the tests\u{1f}cargo test");
+    }
 
     #[test]
     fn ctrl_w_after_a_wide_space_deletes_the_word_without_crashing() {

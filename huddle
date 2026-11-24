@@ -50,12 +50,15 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 INSTALL_URL = "https://raw.githubusercontent.com/sourabhrathourr/huddle/main/install.sh"
 
 INVITE_TTL = 15 * 60  # an unjoined invite stays open this long
 IDLE_TTL = 24 * 3600  # a huddle with no messages for this long is over
 POLL = 0.3  # seconds between checks while waiting
+QUIET = 60  # a `huddle wait` in a huddle where nothing was written for this long checks less often...
+SLOW_POLL = 2.0  # ...slowing down to this
+RECHECK = 15  # with nothing written, a wait still looks this often: a huddle also ends by going idle
 KEEP_DAYS = 30  # huddles with no activity for this long are deleted
 NAP = float(os.environ.get("HUDDLE_NAP", 30 * 60))  # a helper with nothing to do this long rests; a message wakes it
 BOOT_TIMEOUT = 300  # seconds an app gets to start a helper's thread
@@ -69,10 +72,16 @@ JOIN_STEP = {
     "claude": "Codex isn't connected yet. Tell the user to type $huddle in Codex to join. That's the only step.",
     "codex": "Claude isn't connected yet. Tell the user to type /huddle in Claude Code to join. That's the only step.",
 }
-AGENTS = ("claude", "codex")
-NAMES = {"claude": "Claude", "codex": "Codex", "you": "the user"}
-LABELS = {"claude": "Claude", "codex": "Codex", "you": "You"}
-COLORS = {"claude": 208, "codex": 75, "you": 250}  # 256-colour codes: Claude orange, Codex blue, you light grey
+AGENTS = ("claude", "codex")  # the apps a pairing connects: threads the user opened, with /huddle and $huddle
+APPS = AGENTS + ("agy",)  # every app that can be a helper, or start one: Antigravity's CLI too
+NAMES = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity", "you": "the user"}
+LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity", "you": "You"}
+COLORS = {"claude": 208, "codex": 75, "agy": 141, "you": 250}  # 256-colour: Claude orange, Codex blue, Antigravity
+# violet, you light grey
+EFFORT = {"agy": os.environ.get("HUDDLE_AGY_EFFORT", "high")}  # a helper's reasoning effort when none is asked for;
+# Claude Code and Codex keep their own settings
+# What tells huddle which thread a command runs in. A process huddle starts for someone else never inherits them.
+THREAD_VARS = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "HUDDLE_MEMBER")
 RESERVED = {"you", "huddle", "all", "everyone", "both", "user"}
 
 
@@ -82,6 +91,8 @@ def me():
         return "codex", os.environ["CODEX_THREAD_ID"]
     if os.environ.get("CLAUDE_CODE_SESSION_ID"):
         return "claude", os.environ["CLAUDE_CODE_SESSION_ID"]
+    if os.environ.get("ANTIGRAVITY_CONVERSATION_ID"):
+        return "agy", os.environ["ANTIGRAVITY_CONVERSATION_ID"]
     return "you", None
 
 
@@ -109,6 +120,18 @@ def window():
             return f"{pid}@{started}"
         pid = ppid
     return None
+
+
+def window_open(w):
+    """Whether the Claude Code process window() found is still running: that same process, not a later one that was
+    given its pid. When ps can't say, it counts as running."""
+    pid, _, started = w.partition("@")
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", pid], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    now = " ".join(out.stdout.split())
+    return now == started if now else out.returncode == 0
 
 
 # Each entry upgrades the database by one version (SQLite's user_version). Only ever append.
@@ -194,6 +217,7 @@ MIGRATIONS = [
     # 11: a reply that was held for an asker who stopped waiting, released after its recipient's read mark had
     # already passed it: it's still unread for that recipient until delivered
     ["ALTER TABLE messages ADD COLUMN late INTEGER"],
+    ["ALTER TABLE members ADD COLUMN effort TEXT"],  # 12: a helper's reasoning effort (`huddle spawn --effort`)
 ]
 
 
@@ -599,7 +623,7 @@ def rejoin(conn, h, m, agent, thread, brief):
                           (h["id"], time.time() - 3600, m["name"])).fetchall()[::-1]
     conn.execute("COMMIT")
     others = [x for x in members(conn, h) if x["id"] != m["id"]]
-    peer = next((x for x in others if not x["helper"]), None)
+    peer = next((x for x in others if not x["helper"] and x["agent"] in CONTINUE_STEP), None)
     with_ = " and ".join(named(x["agent"], x["thread"]) if not x["helper"] else label(x) for x in others) or "nobody else yet"
     print(f"Continued huddle {h['code']} with {with_}, in place of an earlier {NAMES[agent]} thread.")
     if peer:
@@ -643,6 +667,7 @@ def cmd_start(conn, a):
     agent, thread = me()
     if not thread:
         fail("Run `huddle start` from inside Claude Code or Codex.")
+    pairs_with(agent)
     current = [h for h in live(conn) if seat(conn, h, thread)]
     if current and not a.new and (not a.code or current[-1]["code"] == a.code):
         already_in(conn, thread)
@@ -707,10 +732,19 @@ def join_running(conn, h, agent, thread, brief):
         print("Your context was shared in the huddle.")
 
 
+def pairs_with(agent):
+    """Pairing wakes a thread the user opened when a message arrives: Codex through `codex queue`, Claude Code
+    through its `huddle wait`. Antigravity has no way in yet, so it starts helpers instead."""
+    if agent not in AGENTS:
+        fail(f"{NAMES[agent]} can't connect with an open thread yet. It can start helpers: `huddle spawn codex` or "
+             f"`huddle spawn claude`, with the task.")
+
+
 def cmd_open(conn, a, brief=None):
     agent, thread = me()
     if not thread:
         fail("Run `huddle open` from inside Claude Code or Codex.")
+    pairs_with(agent)
     if already_in(conn, thread):
         return
     brief = read_stdin() if brief is None else brief
@@ -732,6 +766,7 @@ def cmd_join(conn, a):
     agent, thread = me()
     if not thread:
         fail("Run `huddle join` from inside Claude Code or Codex.")
+    pairs_with(agent)
     if a.code:
         rows = live(conn, "AND code = :code AND joined_at IS NULL", code=a.code)
         if not rows:
@@ -851,7 +886,7 @@ def cmd_send(conn, a):
     if a.bg:
         print(f"Sent to {label(target)}. Its reply will reach you as a huddle message.")
         return
-    await_reply(conn, h, msg_id, target, a.timeout)
+    await_reply(conn, h, msg_id, target, a.timeout, m)
 
 
 def cmd_spawn(conn, a):
@@ -878,10 +913,10 @@ def cmd_spawn(conn, a):
     now = time.time()
     hid = h["id"]
     mid = conn.execute(
-        "INSERT INTO members (huddle_id, name, agent, thread, helper, parent, cwd, model, joined_at, state, since) "
-        "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'starting', ?)",
+        "INSERT INTO members (huddle_id, name, agent, thread, helper, parent, cwd, model, effort, joined_at, state, "
+        "since) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'starting', ?)",
         (hid, name, a.agent, str(uuid.uuid4()) if a.agent == "claude" else None, parent["id"] if parent else None,
-         cwd, a.model, now, now)).lastrowid
+         cwd, a.model, a.effort or EFFORT.get(a.agent), now, now)).lastrowid
     h = huddle_by_id(conn, hid)
     set_read(conn, mid, last_id(conn, h))
     sender = parent["name"] if parent else "you"
@@ -895,7 +930,7 @@ def cmd_spawn(conn, a):
     if a.bg:
         print("Its reply will reach you as a huddle message.")
         return
-    await_reply(conn, h, msg_id, helper, a.timeout)
+    await_reply(conn, h, msg_id, helper, a.timeout, parent)
 
 
 def free_name(conn, h, base):
@@ -903,9 +938,10 @@ def free_name(conn, h, base):
     return next(n for n in itertools.chain([base], (f"{base}-{i}" for i in itertools.count(2))) if n not in taken)
 
 
-def await_reply(conn, h, msg_id, target, timeout):
-    """Wait for the helper's reply to one message and print it. If this stops waiting first (a timeout, Ctrl-C, or
-    the caller's tool gives up), any reply not printed yet is delivered like any other huddle message."""
+def await_reply(conn, h, msg_id, target, timeout, asker=None):
+    """Wait for the helper's reply to one message and print it, with whatever else reached a Claude Code asker
+    meanwhile: it hears through the reply, with no `huddle wait` of its own. If this stops waiting first (a timeout,
+    Ctrl-C, or the caller's tool gives up), any reply not printed yet is delivered like any other huddle message."""
     started, printed, checked = time.time(), False, time.time()
 
     def give_up():
@@ -932,6 +968,17 @@ def await_reply(conn, h, msg_id, target, timeout):
                 secs = int(r["sent_at"] - started)
                 when = f"after {secs // 60}m {secs % 60}s" if secs >= 60 else f"after {secs}s"
                 print(f"{label(target)} replied {when}:\n\n{r['text']}")
+                hears = asker and asker["agent"] != "codex" and not asker["helper"]  # (Codex is woken by codex queue)
+                also, busy = take_unread(conn, h, asker) if hears else ([], [])
+                if also:
+                    crew = Crew(conn, h)
+                    print("\n---\nAlso for you, sent while you waited:\n")
+                    for x in also:
+                        print(fmt(x, crew))
+                if busy and not listening(conn, asker):  # (a wait running already brings it)
+                    how = " in the background" if asker["agent"] == "claude" else ""
+                    print(f"\n(Still working, with nobody waiting on it: {', '.join(busy)}. What it says next "
+                          f"reaches you as a huddle message: run `huddle wait`{how} to hear it.)")
                 return
             current = huddle_by_id(conn, h["id"])
             if not is_live(current):
@@ -954,6 +1001,59 @@ def await_reply(conn, h, msg_id, target, timeout):
             give_up()
 
 
+def listening(conn, m):
+    """Whether a `huddle wait` is running for this member."""
+    row = conn.execute("SELECT pid FROM waits WHERE member = ?", (m["id"],)).fetchone()
+    return bool(row) and process_is(row["pid"], "huddle")
+
+
+def live_claims(conn, h):
+    """The messages in this huddle a running command is waiting on the reply to. A claim left by a command that died
+    waits on nothing. (It asks ps about each, so it's worked out before taking the write lock.)"""
+    rows = conn.execute("SELECT w.message, w.pid FROM awaiting w JOIN messages q ON q.id = w.message "
+                        "WHERE q.huddle_id = ?", (h["id"],)).fetchall()
+    return {r["message"] for r in rows if process_is(r["pid"], "huddle")}
+
+
+def still_busy(conn, h, m, waited):
+    """The helpers this member started, or that those started, that have a message to answer with no command waiting
+    on the answer (waited: live_claims): at work on it, or about to be. What they say next comes as a huddle message,
+    which only a `huddle wait` brings a Claude Code thread."""
+    helpers = [x for x in members(conn, h) if x["helper"]]
+    mine, grew = {m["id"]}, True
+    while grew:  # (helpers this one started, and the ones they started)
+        grew = False
+        for x in helpers:
+            if x["parent"] in mine and x["id"] not in mine:
+                mine.add(x["id"])
+                grew = True
+    # (a runner posts its answer, then marks the message read: in between, that helper has answered it. Per helper:
+    # one message to everyone has an answer from each.)
+    answered = {(r[0], r[1]) for r in conn.execute(
+        "SELECT sender, reply_to FROM messages WHERE huddle_id = ? AND reply_to IS NOT NULL", (h["id"],))}
+    return [label(x) for x in helpers if x["id"] in mine and any(
+        q["sender"] != "you" and q["id"] not in waited and (x["name"], q["id"]) not in answered
+        for q in unread(conn, h, x))]
+
+
+def take_unread(conn, h, m):
+    """Claim what this member hasn't had, so it's printed once, by whichever command gets there first; and, in the same
+    moment, which of its helpers will answer later with nobody waiting (a reply posted meanwhile is in the first).
+    Nothing is claimed unless both are had."""
+    waited = live_claims(conn, h)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        msgs = unread(conn, h, m)
+        if msgs:
+            set_read(conn, m["id"], msgs[-1]["id"])
+        busy = still_busy(conn, h, m, waited)
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return msgs, busy
+
+
 def cmd_wait(conn, a):
     agent, thread = me()
     h, m = mine(conn, a.code)
@@ -970,7 +1070,29 @@ def cmd_wait(conn, a):
 def wait_for(conn, a, agent, thread, h, m, token):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     deadline = time.time() + a.timeout if a.timeout else None
+    home = window()  # the Claude Code process this thread runs in: once it's gone, there's nobody left to wake
+    version, looked, written, checked = None, 0.0, time.time(), 0.0
     while True:
+        now = time.time()
+        if home and now - checked > 10:
+            checked = now
+            if not window_open(home):
+                print("The Claude Code thread this wait listened for has closed. Nothing to do.")
+                sys.exit(0)
+        # Look only when another process wrote something since (that changes data_version), without taking the
+        # write lock, and now and then regardless: a huddle also ends by going quiet, and that writes nothing.
+        current = conn.execute("PRAGMA data_version").fetchone()[0]
+        if current != version:
+            version, written = current, now
+        elif now - looked < RECHECK:
+            if deadline and now > deadline:
+                fail("No reply yet.", 3)
+            quiet = now - written
+            time.sleep(POLL if quiet < QUIET else min(SLOW_POLL, POLL + (quiet - QUIET) / 30))
+            continue
+        if now - looked >= RECHECK:  # on the first look, then now and then: a reply held for an asker that died
+            release_orphans(conn)
+        looked = now
         conn.execute("BEGIN IMMEDIATE")
         # Read the huddle before its messages: anything sent before it ended is then already visible.
         code, h = h["code"], huddle_by_id(conn, h["id"])
@@ -1063,12 +1185,113 @@ def window_pid(m):
     return int(pid) if pid.isdigit() and process_is(int(pid), "claude") else None
 
 
+def rex():
+    """Rex's CLI, when this command runs in one of Rex's terminals: a view then opens in a pane or tab beside it."""
+    return shutil.which("rex") if os.environ.get("REX_SESSION") and os.environ.get("REX_BLOCK") else None
+
+
+VIEWS = "views.json"  # the one view huddle keeps open in each Rex or tmux session: {"rex:<session>": {kind, id}}
+
+
+def view_key():
+    """The terminal session huddle keeps its one view in: Rex's or tmux's, or None outside both."""
+    if rex():
+        return f"rex:{os.environ['REX_SESSION']}"
+    if os.environ.get("TMUX") and shutil.which("tmux"):
+        session = subprocess.run(["tmux", "display-message", "-p", "#{session_id}"], capture_output=True, text=True)
+        return f"tmux:{session.stdout.strip()}"
+    return None
+
+
+def in_view(m):
+    """Whether huddle's view in this terminal session has this member's session open: opening it again replaces that
+    view. The process holding the session must be the one in the view's pane, not one the user opened elsewhere after
+    closing the view."""
+    key = view_key()
+    try:
+        view = json.loads((HOME / VIEWS).read_text()).get(key) if key else None
+    except (OSError, ValueError):
+        view = None
+    if not isinstance(view, dict) or view.get("member") != m["id"] or not view.get("pane") or not m["shown"]:
+        return False
+    return process_env(m["shown"], "REX_BLOCK" if key.startswith("rex:") else "TMUX_PANE") == view["pane"]
+
+
+def open_view(kind, cmd, cwd, member=None):
+    """Open cmd in a pane beside this terminal or a tab of its own (kind), in Rex or tmux, without moving the user's
+    focus there. Each terminal session has one such view: what it showed before closes first. Returns where it
+    opened ("a pane beside this one"), or None where there's no Rex or tmux to open it in."""
+    rex_ = rex()
+    tmux = shutil.which("tmux") if os.environ.get("TMUX") and not rex_ else None
+    if not (rex_ or tmux):
+        return None
+    try:
+        views = json.loads((HOME / VIEWS).read_text())
+    except (OSError, ValueError):
+        views = {}
+    key = view_key()
+    if rex_:
+        session = os.environ["REX_SESSION"]
+        old = views.get(key)
+        if old:  # (one closed by the user since is already gone; that's fine)
+            subprocess.run([rex_, "window" if old["kind"] == "tab" else "block", "close", "-s", session, old["id"]],
+                           capture_output=True, timeout=10)
+        if kind == "tab":
+            args = [rex_, "window", "new", "-s", session, "huddle"]
+        else:
+            args = [rex_, "split", "-s", session, "-b", os.environ["REX_BLOCK"], "--split", "right", "--label", "huddle"]
+        try:
+            out = subprocess.run([*args, "-c", cwd, "--focus=false", "--json", "--", *cmd], capture_output=True,
+                                 text=True, timeout=15)
+            made = json.loads(out.stdout) if out.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            made = None
+        if not isinstance(made, dict):
+            return None
+        new = made.get("window_id") if kind == "tab" else (made.get("block_ids") or [None])[0]
+        pane = (made.get("block_ids") or [None])[0]
+    else:
+        old = views.get(key)
+        if old:
+            subprocess.run([tmux, "kill-window" if old["kind"] == "tab" else "kill-pane", "-t", old["id"]],
+                           capture_output=True)
+        if kind == "tab":
+            args = [tmux, "new-window", "-d", "-n", "huddle", "-P", "-F", "#{window_id} #{pane_id}"]
+        else:
+            here = os.environ.get("TMUX_PANE")
+            args = [tmux, "split-window", "-h", "-d", *(["-t", here] if here else []), "-P", "-F", "#{pane_id} #{pane_id}"]
+        out = subprocess.run([*args, "-c", cwd, *cmd], capture_output=True, text=True)
+        if out.returncode != 0:
+            return None
+        new, _, pane = out.stdout.strip().partition(" ")
+    if new:
+        views[key] = {"kind": kind, "id": new, "pane": pane, "member": member}
+        try:
+            (HOME / VIEWS).write_text(json.dumps(views))
+        except OSError:
+            pass
+    return "a tab named “huddle”" if kind == "tab" else "a pane beside this one"
+
+
+def huddle_cmd(*args):
+    """This command as a view runs it: the user's, not an agent's, against the same history."""
+    keep = [f"{k}={v}" for k, v in os.environ.items() if k.startswith("HUDDLE_") and k != "HUDDLE_MEMBER"]
+    return ["env", *[x for v in THREAD_VARS for x in ("-u", v)], f"HUDDLE_HOME={HOME}", *keep, sys.executable,
+            os.path.abspath(__file__), *args]
+
+
 def go_to_window(m):
-    """Show the user the window a thread they opened runs in. In herdr: its terminal, here, until ctrl+\\ brings
-    them back. In tmux: its pane. Returns an exit code, or None where there's no way to reach it."""
+    """Show the user the window a thread they opened runs in. In Rex: its pane. In herdr: its terminal, here, until
+    ctrl+\\ brings them back. In tmux: its pane. Returns an exit code, or None where there's no way to reach it."""
     pid = window_pid(m)
     if not pid:
         return None
+    rex_ = rex()
+    block = process_env(pid, "REX_BLOCK") if rex_ else None
+    if block:
+        session = process_env(pid, "REX_SESSION")
+        return subprocess.call([rex_, "focus", *(["-s", session] if session else []), block],
+                               stdout=subprocess.DEVNULL)
     hc = herdr()
     terminal = process_env(pid, "HC_TERMINAL_ID") if hc else None
     if terminal:
@@ -1109,10 +1332,11 @@ def open_beside(m, h, cmd, cwd):
 
 
 def cmd_show(conn, a):
-    """Go to a member's real session. A thread the user opened: its own window (herdr or tmux). A helper: its app, the
-    Codex TUI or Claude Code, with everything it was sent, thought, ran and wrote; in a terminal of its own beside
-    this one where herdr or tmux allows, else in this one until it's closed. A Codex helper on Codex's shared server
-    stays in the huddle meanwhile: the user and the agents can both talk to it. Any other helper's runner lets go
+    """Go to a member's real session. A thread the user opened: its own window (Rex, herdr or tmux). A helper: its app,
+    the Codex TUI or Claude Code, with everything it was sent, thought, ran and wrote. In Rex or tmux it opens in a
+    pane beside this one or a tab (--tab), the one view huddle keeps there, and a helper at work shows its work live
+    in the watch instead; in herdr, in a terminal of its own; else in this one until it's closed. A Codex helper on
+    Codex's shared server stays in the huddle meanwhile: the user and the agents can both talk to it. Any other helper's runner lets go
     of the session while the user has it open; messages for it wait, then go to it as usual."""
     h, _ = sender_of(conn, a.code)
     if not h:
@@ -1120,10 +1344,11 @@ def cmd_show(conn, a):
     m = resolve(conn, h, a.name)
     if not m["thread"]:
         fail(f"{label(m)} hasn't started a session yet.")
-    cmd = [app("codex"), "resume", m["thread"]] if m["agent"] == "codex" else [app("claude"), "--resume", m["thread"]]
+    cmd = {"codex": [app("codex"), "resume", m["thread"]], "claude": [app("claude"), "--resume", m["thread"]],
+           "agy": [app("agy"), "--conversation", m["thread"]]}[m["agent"]]
     cwd = m["cwd"] or m["dir"] or os.getcwd()
     cwd = cwd if os.path.isdir(cwd) else os.getcwd()
-    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "HUDDLE_MEMBER")}
+    env = {k: v for k, v in os.environ.items() if k not in THREAD_VARS}
     if not m["helper"] and not a.anyway:
         code = go_to_window(m)
         if code is None:
@@ -1133,11 +1358,34 @@ def cmd_show(conn, a):
     # A Codex helper on Codex's shared server can be open in Codex and in huddle at once, working or not. Any other
     # helper's session belongs to one app at a time: its runner lets go while the user has it open.
     shared = m["agent"] == "codex" and (m["shared"] if runner_alive(m) else codex_socket() is not None)
-    if m["helper"] and shown_open(m) and not shared:
+    if a.here:  # a view replacing one that had this session open: that one lets go as it closes
+        deadline = time.time() + 5
+        while m["helper"] and shown_open(m) and not shared and time.time() < deadline:
+            time.sleep(0.2)
+            m = member_by_id(conn, m["id"])
+    if m["helper"] and shown_open(m) and not shared and (a.here or not in_view(m)):
+        # (open in huddle's own view here, it's replaced: the new view waits above for the old one to let go)
         fail(f"{label(m)}'s session is already open in another terminal. Close it there first.")
-    if m["helper"] and not shared and m["state"] in ("working", "starting") and not a.anyway:
+    working = m["helper"] and not shared and m["state"] in ("working", "starting") and not a.anyway
+    if m["helper"] and not a.here:
+        # In Rex or tmux: a pane or tab of its own, which this same command fills. A helper at work can't be opened
+        # in its app, so the view follows its work live in the watch instead.
+        kind = "tab" if a.tab else "pane" if a.pane else os.environ.get("HUDDLE_OPEN", "pane")
+        view = ["watch", str(h["code"])] if working else ["show", m["name"], "-c", str(h["code"]), "--here"] + (
+            ["--anyway"] if a.anyway else [])
+        where = open_view("tab" if kind == "tab" else "pane", huddle_cmd(*view), cwd, m["id"])
+        if where:
+            print(f"Opened {label(m)}'s work, live in huddle watch, in {where}." if working else
+                  f"Opened {label(m)}'s session in {NAMES[m['agent']]}, in {where}.")
+            return
+    if working:
         fail(f"{label(m)} is working right now. Follow it live in `huddle watch` (ctrl+o), or open its session once "
              f"it's done.", 3)
+    if (me()[1] or os.environ.get("HUDDLE_MEMBER")) and not herdr() and not sys.stdin.isatty():
+        # an agent's command, with no terminal of the user's to open it in
+        fail(f"There's no terminal here to open {label(m)} in. In Rex or tmux, `huddle show` opens it in a pane or "
+             f"tab beside you. Elsewhere, run `huddle show {m['name']} -c {h['code']}` in a terminal of your own, "
+             f"or follow it in `huddle watch`.", 5)
     held = m["helper"] and not shared and m["state"] not in ("working", "starting")
     if held:
         hold(conn, m)
@@ -1145,7 +1393,7 @@ def cmd_show(conn, a):
         # its runner follows the thread, so what the user says to it in Codex shows in the watch too
         conn.execute("UPDATE members SET state = 'starting', since = ? WHERE id = ?", (time.time(), m["id"]))
         start_runner(m)
-    beside = open_beside(m, h, cmd, cwd) if m["helper"] else None
+    beside = open_beside(m, h, cmd, cwd) if m["helper"] and not a.here else None
     if beside:
         code, pid = beside
         if held:
@@ -1163,6 +1411,9 @@ def cmd_show(conn, a):
     # Ctrl-C belongs to the app; this process only waits for it to close (a handler, unlike ignoring the
     # signal, isn't passed on to the app)
     signal.signal(signal.SIGINT, lambda *_: None)
+    # a view closed under it (Rex or tmux closing its pane, or a newer view taking its place) still lets go
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit(129))
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         code = subprocess.call(cmd, cwd=cwd, env=env)
     except OSError as e:
@@ -1352,7 +1603,7 @@ def tail(path, size=600):
 
 
 def helper_env(m):
-    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "HUDDLE_MEMBER")}
+    env = {k: v for k, v in os.environ.items() if k not in THREAD_VARS}
     env["HUDDLE_MEMBER"] = str(m["id"])
     return env
 
@@ -1530,7 +1781,7 @@ class CodexHelper:
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1)
             self.out, self.source = self.p.stdin, self.p.stdout
         self.events, self.answers, self.next_id, self.turn = queue.Queue(), {}, 0, None
-        self.steps, self.thoughts = Steps(), {}
+        self.steps, self.thoughts, self.effort = Steps(), {}, m["effort"]
         self.others_turn, self.final, self.last = None, None, None  # a turn the user started in Codex itself
         self.lock = threading.Lock()
         threading.Thread(target=self.read, daemon=True).start()
@@ -1624,8 +1875,10 @@ class CodexHelper:
 
     def start(self, text):
         self.final, self.last, self.turn, self.thoughts = None, None, None, {}
-        self.turn = self.call("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": text}],
-                                              "summary": "detailed"})["turn"]["id"]
+        params = {"threadId": self.thread, "input": [{"type": "text", "text": text}], "summary": "detailed"}
+        if self.effort:
+            params["effort"] = self.effort  # (it holds for the thread's later turns too)
+        self.turn = self.call("turn/start", params)["turn"]["id"]
 
     def interrupt(self):
         if self.turn:
@@ -1776,6 +2029,8 @@ class ClaudeHelper:
                "--permission-mode", mode, "--append-system-prompt", note]
         if m["model"]:
             cmd += ["--model", m["model"]]
+        if m["effort"]:
+            cmd += ["--effort", m["effort"]]
         # A new helper's session ID is chosen when it's spawned; once its session exists, every start resumes it.
         cmd += ["--resume", m["thread"]] if session_exists(m["thread"]) else ["--session-id", m["thread"]]
         self.p = subprocess.Popen(cmd, cwd=m["cwd"], env=helper_env(m), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1912,6 +2167,253 @@ def claude_activity(block):
     return f"using {name}"
 
 
+class AgyHelper:
+    """Antigravity through `agy --print` with stream-json in and out: one process, many turns, one conversation.
+    Its stream can't interrupt a turn, so interrupting stops the process; the next turn starts it again on the same
+    conversation (`--conversation`). It has no system-prompt flag: a new conversation's first message carries the
+    helper note. Run this way, nobody can answer its permission prompts: agy refuses what it would have asked about
+    and ends the turn there, unanswered. The helper then asks it once to finish without that step, and the reply says
+    what was refused. HUDDLE_AGY_SKIP_PERMISSIONS=1 lets it run everything instead."""
+
+    def __init__(self, m, note, log):
+        self.m, self.note, self.log = m, note, log
+        self.thread, self.steps, self.p = m["thread"], Steps(), None
+        self.fresh, self.interrupted, self.texts, self.tools, self.refused = not m["thread"], False, {}, {}, []
+        self.titles, self.running, self.asked_again, self.said, self.counted = {}, set(), False, "", 0
+        self.params = {}
+        self.relaunch()
+
+    def relaunch(self):
+        try:
+            self.launch()
+        except (RuntimeError, Exited):
+            if not self.thread:
+                raise
+            print(f"Couldn't continue conversation {self.thread}; starting a new one.", file=self.log, flush=True)
+            self.thread, self.fresh = None, True  # its conversation is gone (say, interrupted before it was saved)
+            self.launch()
+
+    def launch(self):
+        cmd = [app("agy"), "--input-format", "stream-json", "--output-format", "stream-json", "--print="]
+        if os.environ.get("HUDDLE_AGY_MODE"):  # else the Agent Mode in agy's own settings (Auto by default)
+            cmd += ["--mode", os.environ["HUDDLE_AGY_MODE"]]
+        if os.environ.get("HUDDLE_AGY_SKIP_PERMISSIONS") == "1":
+            cmd += ["--dangerously-skip-permissions"]
+        if self.m["model"]:
+            cmd += ["--model", self.m["model"]]
+        if self.m["effort"]:
+            cmd += ["--effort", self.m["effort"]]
+        if self.thread:
+            cmd += ["--conversation", self.thread]
+        # (a process's results list every refusal since it started: a new one starts the count again)
+        self.events, self.interrupted, self.denied_seen = queue.Queue(), False, 0
+        self.p = subprocess.Popen(cmd, cwd=self.m["cwd"], env=helper_env(self.m), stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1)
+        threading.Thread(target=self.read, args=(self.p, self.events), daemon=True).start()
+        # before any message, it names its conversation
+        deadline = time.time() + BOOT_TIMEOUT
+        while True:
+            try:
+                o = self.events.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                stop(self.p)
+                raise RuntimeError("Antigravity didn't start in time")
+            if o.get("event") == "huddle/exited":
+                raise Exited("Antigravity stopped")
+            if o.get("event") == "result":
+                stop(self.p)
+                raise RuntimeError((o.get("result") or {}).get("error") or "Antigravity couldn't start")
+            if o.get("event") == "init":
+                self.thread = o.get("conversation_id") or (o.get("init") or {}).get("conversation_id") or self.thread
+                return
+
+    @staticmethod
+    def read(p, events):
+        for line in p.stdout:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(o, dict):
+                events.put(o)
+        events.put({"event": "huddle/exited"})
+
+    def start(self, text):
+        if self.interrupted or self.p.poll() is not None:
+            stop(self.p)  # an interrupt ended it: this turn starts it again, on the same conversation
+            self.relaunch()
+        if self.fresh:
+            text, self.fresh = f"{self.note}\n\n---\n\n{text}", False
+        self.refused, self.counted, self.asked_again, self.said = [], 0, False, ""
+        self.send(text)
+
+    def send(self, text):
+        self.texts = {}
+        try:
+            self.p.stdin.write(json.dumps({"event": "user", "message": {"role": "user", "content": text}}) + "\n")
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            raise Exited("Antigravity stopped")
+
+    def interrupt(self):
+        if self.p.poll() is None:
+            self.interrupted = True
+            self.p.send_signal(signal.SIGINT)
+
+    def poll(self):
+        try:
+            o = self.events.get(timeout=POLL)
+        except queue.Empty:
+            return False, None, None
+        event = o.get("event")
+        if event == "huddle/exited":
+            self.cancel_running()
+            if self.interrupted:
+                return True, "(Interrupted before finishing.)", None
+            raise Exited("Antigravity stopped")
+        if event == "step_update":
+            s = o.get("step_update") or {}
+            kind, state, index = s.get("step_type"), s.get("state"), s.get("step_index")
+            if kind == "agent_response":
+                self.texts[index] = self.texts.get(index, "") + (s.get("text_delta") or "")
+                if state == "DONE" and self.texts[index].strip():
+                    self.steps.add(None, "say", "said", self.texts[index].strip(), "ok")
+                return False, None, "writing"
+            if kind == "tool":
+                self.thread = self.thread or s.get("conversation_id")
+                info = dict(s.get("tool_info") or {})
+                info["name"] = info.get("name") or s.get("tool_name")
+                ref, act = f"{s.get('conversation_id') or self.thread}:{index}", None
+                if ref not in self.tools:
+                    kind_, title, detail = agy_step(info)
+                    self.tools[ref], self.titles[ref], self.params[ref] = kind_, title, bool(info.get("parameters"))
+                    self.steps.add(ref, kind_, title, detail, "running")
+                    self.running.add(ref)
+                    act = agy_activity(info)
+                elif info.get("parameters") and not self.params[ref]:
+                    # first seen before it said what it is (say, waiting on review): named now
+                    kind_, title, detail = agy_step(info)
+                    self.tools[ref], self.titles[ref], self.params[ref] = kind_, title, True
+                    self.steps.set(ref, kind=kind_, title=title, detail=detail)
+                    act = agy_activity(info)
+                if state in AGY_ENDED:
+                    self.running.discard(ref)
+                    error = info.get("error") or s.get("error")
+                    error = (error.get("message") or error.get("type")) if isinstance(error, dict) else error
+                    failed = state != "DONE" or bool(error)  # (an error, a cancel, a failure)
+                    if error and "denied permission" in error:
+                        title = self.titles.get(ref, "")
+                        self.refused.append(f"{self.tools[ref]} {title}".strip())
+                    out = info.get("output") or error
+                    detail = clip(out) if out and (self.tools[ref] in ("run", "tool", "search") or failed) else None
+                    self.steps.set(ref, status="failed" if failed else "ok", detail=detail)
+                return False, None, act
+            return False, None, None
+        if event == "result":
+            r = o.get("result") or {}
+            self.thread = r.get("conversation_id") or self.thread
+            self.cancel_running()
+            if self.interrupted or r.get("finished_reason") == "interrupted":
+                return True, "(Interrupted before finishing.)", None
+            if r.get("status") != "SUCCESS":
+                return True, f"(The turn failed: {r.get('error') or r.get('finished_reason') or 'an error'}.)", None
+            text = (r.get("response") or "").strip()
+            if text:
+                self.steps.ops.append(("drop_say", text))
+            refused = self.refused_in(r)
+            if refused and not text and not self.asked_again:
+                # A refusal ended its turn before it answered. Once per message, it's asked to finish without that
+                # step: what it found isn't lost, and a second refusal ends it for good, so this never loops.
+                self.asked_again, self.said = True, text
+                ask = AGY_REFUSED.format(steps=", ".join(f"`{x}`" for x in refused))
+                self.steps.add(None, "say", "huddle asked it to finish without the refused step", ask, "ok")
+                self.send(ask)
+                return False, None, "finishing without the refused step"
+            return True, (text or self.said or "(Finished without a message.)") + self.refusals(), None
+        return False, None, None
+
+    def refused_in(self, result):
+        """What this turn was refused, adding to the message's list. agy names each in its steps, and in the result's
+        denied_actions."""
+        denied = [a for a in result.get("denied_actions") or [] if isinstance(a, dict)]
+        new, self.denied_seen = denied[self.denied_seen:], len(denied)  # (each result repeats the earlier ones)
+        named = self.refused[self.counted:]
+        if not named:  # its steps didn't say: agy's own list does
+            named = [a.get("display_name") or a.get("action") or "a step" for a in new]
+            self.refused += named
+        self.counted = len(self.refused)
+        return named
+
+    def cancel_running(self):
+        """Calls still open when the turn ended: agy cancelled them (say, along with one it was refused)."""
+        for ref in self.running:
+            self.steps.set(ref, status="failed", detail="(Cancelled: the turn ended before this finished.)")
+        self.running = set()
+
+    def refusals(self):
+        """What agy was refused while working on this message, which it doesn't count as a failure: said, so whoever
+        asked knows it didn't happen."""
+        refused = list(dict.fromkeys(self.refused))
+        if not refused:
+            return ""
+        shown = ", ".join(f"`{x}`" for x in refused[:5]) + (f" and {len(refused) - 5} more" if len(refused) > 5 else "")
+        return (f"\n\n(Antigravity was refused permission for {len(refused)} step{'s' if len(refused) > 1 else ''}, "
+                f"so {'they' if len(refused) > 1 else 'it'} didn't happen: {shown}. A helper has nobody to approve "
+                f"its prompts. HUDDLE_AGY_SKIP_PERMISSIONS=1 lets Antigravity helpers run everything.)")
+
+    def close(self):
+        if self.p:
+            stop(self.p)
+
+
+AGY_ENDED = ("DONE", "ERROR", "CANCELED", "CANCELLED", "FAILED")  # a step's last state; any other is on its way
+
+# What a helper whose turn a refusal ended is asked next, once per message.
+AGY_REFUSED = ("(From huddle, not the user.) Your turn ended because you were refused permission for {steps}. You're a "
+               "helper, so nobody can approve permission prompts: it didn't happen. Don't retry it or work around it. "
+               "Finish the task as far as you can without it, then reply: what you did and found, and what you "
+               "couldn't do because of the refusal.")
+
+AGY_EDITS = ("write_file", "write_to_file", "edit_file", "replace_file_content", "multi_replace_file_content",
+             "sed_file", "notebook_edit")
+
+
+def agy_step(info):
+    """An Antigravity tool call as a step: (kind, title, detail). Its stream names the file an edit touched, not the
+    change itself."""
+    name, inp = info.get("name") or "tool", info.get("parameters") or {}
+    path = inp.get("Path") or inp.get("AbsolutePath") or inp.get("TargetFile") or inp.get("File") or ""
+    if name == "run_command":
+        return "run", full_command(inp.get("CommandLine") or inp.get("Command") or ""), None
+    if name in AGY_EDITS:
+        return "edit", Path(path).name or name, None
+    if name in ("read_file", "view_file", "view_file_outline"):
+        return "read", path or "a file", None
+    if name in ("grep_search", "find_by_name", "list_dir", "search_web", "read_url_content"):
+        what = inp.get("Query") or inp.get("Pattern") or inp.get("SearchPath") or inp.get("Url") or path
+        return "search", what or name, None
+    if name in ("invoke_subagent", "browser_subagent"):
+        return "tool", "subagent: " + str(inp.get("Task") or inp.get("Prompt") or inp.get("Name") or ""), None
+    return "tool", name, json.dumps(inp)[:500]
+
+
+def agy_activity(info):
+    name, inp = info.get("name") or "a tool", info.get("parameters") or {}
+    if name == "run_command":
+        return "running " + short_command(inp.get("CommandLine") or "")
+    if name in AGY_EDITS:
+        return "editing " + Path(inp.get("Path") or inp.get("TargetFile") or "").name
+    if name in ("read_file", "view_file", "view_file_outline"):
+        return "reading " + Path(inp.get("Path") or inp.get("AbsolutePath") or "").name
+    if name in ("grep_search", "find_by_name", "list_dir"):
+        return "searching the code"
+    if name in ("search_web", "read_url_content") or name.startswith("browser"):
+        return "browsing the web"
+    if "subagent" in name:
+        return "running a subagent"
+    return f"using {name}"
+
+
 def stop(p):
     if p.poll() is None:
         p.terminate()
@@ -1964,7 +2466,7 @@ def cmd_run(conn, a):
     path = log_path(m)
     log = open(path, "a")
     try:
-        agent = (CodexHelper if m["agent"] == "codex" else ClaudeHelper)(m, note, log)
+        agent = {"codex": CodexHelper, "claude": ClaudeHelper, "agy": AgyHelper}[m["agent"]](m, note, log)
     except (OSError, RuntimeError, Exited) as e:  # whoever asked hears why, instead of waiting forever
         leave("failed", str(e)[:200], answer_queued=f"Couldn't start {NAMES[m['agent']]}: {e}. {tail(path)}")
         return
@@ -2024,7 +2526,7 @@ def cmd_run(conn, a):
                     deliver(conn, h, m["name"])
                     current, rested = None, time.time()
                     continue
-                update(state="working", activity="thinking")
+                update(state="working", activity="thinking", thread=agent.thread)  # (new, if it started afresh)
                 touched = time.time()
                 continue
             if hasattr(agent, "steer") and not theirs:
@@ -2050,6 +2552,7 @@ def cmd_run(conn, a):
                 current, rested, theirs = None, time.time(), False
     except Exited as e:
         if current:
+            record(conn, h, m, current["id"], agent.steps.take())  # (what it closed out as it went down)
             answer(conn, h, m, parent, current, f"({e} unexpectedly before finishing. Send it a message to start it "
                                                  f"again; it continues its own thread.) {tail(path, 300)}")
             if not theirs:
@@ -2076,7 +2579,7 @@ def finish_turn(conn, h, m, parent, agent, current, deadline, mark_read=True):
                 text = said
                 break
     except Exited:
-        pass
+        record(conn, h, m, current["id"], agent.steps.take())  # (what it closed out as it went down)
     answer(conn, h, m, parent, current, text)
     if mark_read:
         set_read(conn, m["id"], current["id"])
@@ -2114,6 +2617,8 @@ def transcript(agent, thread, _found={}):
     """The agent's own session file, found by its thread ID."""
     if not thread:
         return None
+    if agent not in AGENTS:
+        return None  # (Antigravity keeps each conversation in a database of its own, which isn't read yet)
     if thread not in _found:
         if agent == "codex":
             base = CODEX_HOME / "sessions"
@@ -2283,7 +2788,8 @@ def stamp_of(o):
 
 
 # A huddle message quoted in a reply, as the skill asks: "> **Codex:** …" and its following "> " lines.
-RELAYED = re.compile(r"^>\s*\*\*(?:User|Claude|Codex|[\w.-]+ \((?:Claude|Codex)\))\b[^\n]*\n?(?:>[^\n]*\n?)*", re.M)
+RELAYED = re.compile(r"^>\s*\*\*(?:User|Claude|Codex|Antigravity|[\w.-]+ \((?:Claude|Codex|Antigravity)\))\b[^\n]*\n?"
+                     r"(?:>[^\n]*\n?)*", re.M)
 
 
 class Direct:
@@ -2821,7 +3327,7 @@ class Watch:
             return self.command(f, text)
         crew, name = f.crew, typed_to(f)
         at = re.match(r"@([A-Za-z0-9][A-Za-z0-9_.-]*)\s*", text)
-        if at and at.group(1) in crew.names() + list(AGENTS):
+        if at and at.group(1) in crew.names() + list(APPS):
             name, text = at.group(1), text[at.end():]
         if name and name not in crew.names():
             apps = [m["name"] for m in crew.active if m["agent"] == name]
@@ -3062,6 +3568,13 @@ def cmd_doctor(conn, a):
     if claude_help is not None:
         check("--input-format" in claude_help, "Claude Code can run as a helper (stream-json)",
               "This Claude Code can't run as a helper", "Update Claude Code.")
+    agy_help = help_text(["agy", "--help"])
+    if agy_help is not None:  # optional: Antigravity's CLI, as a helper or an agent that starts helpers
+        check("--input-format" in agy_help, "Antigravity can run as a helper (agy, stream-json)",
+              "This agy can't run as a helper", "Update it with `agy update`.")
+    else:
+        print("  · Antigravity's CLI (agy) isn't installed. It's optional: with it, agents can start Antigravity "
+              "helpers.")
     binary = watch_binary()
     print(f"  {'✓' if binary else '·'} " + (f"The full-screen watch: {binary}" if binary else
           "No full-screen watch here; `huddle watch` uses its built-in view"))
@@ -3114,11 +3627,13 @@ def main():
         return s
 
     s = add("spawn", cmd_spawn, "start a helper agent with a task (on stdin or as arguments) and print its reply")
-    s.add_argument("agent", choices=AGENTS)
+    s.add_argument("agent", choices=APPS, help="claude, codex, or agy (Antigravity)")
     s.add_argument("task", nargs="*")
     s.add_argument("--name", help="what to call it; default: the app's name")
     s.add_argument("--cwd", help="the folder it works in; default: this one")
     s.add_argument("--model")
+    s.add_argument("--effort", help="its reasoning effort, such as high or xhigh; default: the app's own (Antigravity: "
+                                    "high, or HUDDLE_AGY_EFFORT)")
     s.add_argument("--topic")
     s.add_argument("--bg", action="store_true", help="don't wait: its reply arrives as a huddle message")
     s.add_argument("--timeout", type=float, default=0, help="stop waiting after this many seconds (it keeps working)")
@@ -3141,9 +3656,15 @@ def main():
     s = add("wait", cmd_wait, "wait for the next message")
     s.add_argument("-c", "--code")
     s.add_argument("--timeout", type=float, default=0, help="seconds; 0 waits until a message arrives (default)")
-    s = add("show", cmd_show, "open a member's real session in its own app (Codex or Claude Code)")
+    s = add("show", cmd_show, "open a member's real session in its own app (Codex or Claude Code); in Rex or tmux, "
+                              "beside you, or a helper's live work while it's busy")
     s.add_argument("name")
     s.add_argument("--anyway", action="store_true", help="open it even while it's working, or if it's a thread you opened")
+    where = s.add_mutually_exclusive_group()
+    where.add_argument("--pane", action="store_true", help="in a pane beside this one (the default; HUDDLE_OPEN=tab "
+                                                           "changes it)")
+    where.add_argument("--tab", action="store_true", help="in a tab of its own")
+    s.add_argument("--here", action="store_true", help=argparse.SUPPRESS)  # in this terminal: what a view runs
     s.add_argument("-c", "--code")
     s = add("read", cmd_read, "show the latest message from a member, such as a helper's reply")
     s.add_argument("name")

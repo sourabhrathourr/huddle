@@ -63,6 +63,10 @@ fn main() {
     }
 }
 
+/// Mouse buttons and the wheel reported to the watch (SGR encoding), and back to the terminal's own.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+
 /// When the watch's own program file last changed: a newer build means it's time to restart into it.
 fn built() -> Option<std::time::SystemTime> {
     std::fs::metadata(std::env::current_exe().ok()?).ok()?.modified().ok()
@@ -81,6 +85,9 @@ fn run(app: &mut app::App) -> std::io::Result<Option<Option<String>>> {
         let _ = execute!(stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
     let _ = execute!(stdout(), EnableBracketedPaste, Print("\x1b[?1007h"));
+    // In the split view the watch takes the mouse, so the wheel scrolls the column it's over; elsewhere it's the
+    // terminal's, so selecting text works as usual.
+    let mut mouse = false;
     let result = (|| -> std::io::Result<Option<Option<String>>> {
         // Draw, then wait for a key for at most a tenth of a second (the spinner's step). Every key that's
         // waiting is handled before the next draw, so typing shows at once and a paste lands in one frame.
@@ -88,6 +95,10 @@ fn run(app: &mut app::App) -> std::io::Result<Option<Option<String>>> {
         loop {
             app.refresh();
             terminal.draw(|frame| ui::draw(frame, app))?;
+            if app.split_shown != mouse {
+                mouse = app.split_shown;
+                let _ = execute!(stdout(), Print(if mouse { MOUSE_ON } else { MOUSE_OFF }));
+            }
             if event::poll(Duration::from_millis(100))? {
                 loop {
                     let ev = event::read()?;
@@ -117,7 +128,8 @@ fn run(app: &mut app::App) -> std::io::Result<Option<Option<String>>> {
             }
             if let Some((code, name)) = app.open.take() {
                 // hand the terminal to the agent's own app, the way git hands it to an editor; take it back after
-                let _ = execute!(stdout(), Print("\x1b[?1007l"), DisableBracketedPaste);
+                let _ = execute!(stdout(), Print(MOUSE_OFF), Print("\x1b[?1007l"), DisableBracketedPaste);
+                mouse = false;
                 if enhanced {
                     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
                 }
@@ -146,7 +158,7 @@ fn run(app: &mut app::App) -> std::io::Result<Option<Option<String>>> {
             }
         }
     })();
-    let _ = execute!(stdout(), Print("\x1b[?1007l"), DisableBracketedPaste);
+    let _ = execute!(stdout(), Print(MOUSE_OFF), Print("\x1b[?1007l"), DisableBracketedPaste);
     if enhanced {
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }

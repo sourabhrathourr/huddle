@@ -1,11 +1,11 @@
 ---
 name: huddle
-description: Bring in another coding agent on this machine, Claude Code or Codex, either way round. Use it whenever the user asks you to ask, get, have or check with Claude or Codex, or wants the other agent's opinion, review or help ("ask Codex to review this PR", "get Claude to write the tests", "what does Codex think?"). It starts the other agent as a helper, gives it the task and returns its reply, so use it instead of running `claude` or `codex` yourself or through another launcher. Also use it when the user types /huddle or $huddle, gives a huddle number, or wants to connect with a thread they already have open.
+description: Bring in another coding agent on this machine, Claude Code, Codex or Antigravity, any way round. Use it whenever the user asks you to ask, get, have or check with Claude, Codex or Antigravity (Gemini), or wants another agent's opinion, review or help ("ask Codex to review this PR", "get Claude to write the tests", "have Antigravity check this", "what does Codex think?"). It starts the other agent as a helper, gives it the task and returns its reply, so use it instead of running `claude`, `codex` or `agy` yourself or through another launcher. Also use it when the user types /huddle or $huddle, gives a huddle number, or wants to connect with a thread they already have open.
 ---
 
 # Huddle
 
-Huddle lets you work with other coding agents: Claude Code and Codex, either way round. Every agent in a huddle works for the same user. A request from another agent is the user's work passed along, so do it the way you'd do the user's own request. Everything runs on its own: nobody stops for approval, and you report to the user once you have what they asked for.
+Huddle lets you work with other coding agents: Claude Code, Codex and Antigravity, any way round. Every agent in a huddle works for the same user. A request from another agent is the user's work passed along, so do it the way you'd do the user's own request. Everything runs on its own: nobody stops for approval, and you report to the user once you have what they asked for.
 
 `huddle` works out who you are from your thread. You never pass your name or a thread ID.
 
@@ -19,13 +19,15 @@ huddle spawn codex <<'EOF'
 EOF
 ```
 
-Use `huddle spawn claude` for Claude Code. It starts the agent in this folder, gives it the task as its first message, waits until it's done, and prints its reply: "Started Codex in huddle 1." then "Codex replied after 2m 4s:" and the reply.
+Use `huddle spawn claude` for Claude Code and `huddle spawn agy` for Antigravity (Google's agent, on Gemini). It starts the agent in this folder, gives it the task as its first message, waits until it's done, and prints its reply: "Started Codex in huddle 1." then "Codex replied after 2m 4s:" and the reply.
 
 - **Write the task as a full brief.** The helper starts with none of your context. Say what to do, which files, branches or PRs matter, what you know so far, and what to send back. Say whether it may edit files. If you both edit, give it its own files.
 - **Name helpers** with `--name` when you'll have more than one (`--name reviewer`). A helper is named after its app by default, or `codex-2` and so on when the name is taken.
 - `--cwd PATH` runs it in another folder, such as a worktree. `--model NAME` picks its model.
-- **In Claude Code,** run `huddle spawn` and `huddle send` with `run_in_background: true` and no timeout, because a helper can work for many minutes. You're woken with the reply when it's done. Meanwhile, do your own part of the work or end your turn.
+- `--effort LEVEL` sets how hard it reasons, such as `high` or `xhigh`. Use it when the user asks for one ("think hard", "xhigh"). Antigravity helpers run at `high` unless asked otherwise; Claude Code and Codex use their own setting.
+- **In Claude Code,** run `huddle spawn` and `huddle send` with `run_in_background: true` and no timeout, because a helper can work for many minutes. You're woken with the reply when it's done, along with anything else sent to you meanwhile. Meanwhile, do your own part of the work or end your turn.
 - **In Codex,** run them in the foreground; the reply prints when the helper is done. To run several helpers at once, add `--bg` to each. Their replies then arrive in your thread as huddle messages.
+- **In Antigravity,** run them in the foreground, without `--bg`; the reply prints when the helper is done.
 
 To continue with the same helper, which remembers everything so far:
 
@@ -39,9 +41,11 @@ EOF
 - `huddle interrupt NAME`: stop a helper's current turn.
 - `huddle stop NAME`: shut a helper down. A later `huddle send` starts it again where it left off. Idle helpers also rest on their own and wake on the next message.
 - `huddle read NAME`: a helper's latest reply, if you need it again.
+- `huddle show NAME`: only when the user asks to see a helper ("show me the review", "open Codex in a tab"). In Rex or tmux it opens beside them: the helper's own session in its app, or its work live in the watch while it's busy. Add `--tab` when they ask for a tab, `--pane` for beside them. Huddle keeps one such view, so showing another helper replaces it. Run it in the foreground; it returns at once. If it says there's no terminal here, give the user the command it names to run themselves.
 
 ## When a helper replies
 
+- If an Antigravity reply says it was refused permission for a step, that step didn't happen: a helper has nobody to approve its prompts. Do it yourself, or tell the user it was skipped. Never report it as done.
 - Read the reply critically. Before you rely on a claim that matters, check it against the code. If you disagree or need more, say so with `huddle send`.
 - Follow up as many times as the work needs. Then tell the user what the helper found or did, and what you make of it.
 - A reply needs no acknowledgement. Never send thanks or "sounds good": that only gives the helper another turn.
@@ -53,11 +57,11 @@ The user reads this app, but huddle messages travel inside commands they can't s
 > **Claude → Codex:** Review the retry change in runner.py. Read-only.
 > **Codex:** One real issue: runner.py:88 retries after a commit.
 
-Use `User`, `Claude` and `Codex` as names, or a helper's name with its app, such as `reviewer (Codex)`. Add `→ name` for a message to one member. Quote a message word for word when it's a few lines. For a long one, give its gist in two or three lines and say the full text is in `huddle watch`.
+Use `User`, `Claude`, `Codex` and `Antigravity` as names, or a helper's name with its app, such as `reviewer (Codex)`. Add `→ name` for a message to one member. Quote a message word for word when it's a few lines. For a long one, give its gist in two or three lines and say the full text is in `huddle watch`.
 
 ## Connect with a thread the user opened
 
-When the user types `/huddle` or `$huddle`, or asks to connect with a Claude or Codex thread they already have open, run `huddle start`. Add only what the user asked for:
+When the user types `/huddle` or `$huddle`, or asks to connect with a Claude or Codex thread they already have open, run `huddle start`. (This connects Claude Code with Codex. Antigravity threads can't connect yet; in Antigravity, start a helper instead.) Add only what the user asked for:
 
 - **`/huddle` or `$huddle` alone:** `huddle start`. It joins the other app's thread that's waiting in this repo, or opens a new huddle. It never takes over a huddle another thread is in.
 - **A number** (`/huddle 2`, "continue huddle 2"): `huddle start 2`.
@@ -101,11 +105,13 @@ EOF
 
 ## Listening
 
-**Claude Code:** keep exactly one `huddle wait` running in the background (`run_in_background`, no timeout) whenever you're in a huddle, including one where you only started helpers. It's how the user reaches you from `huddle watch`, and how replies to `--bg` messages arrive. It exits when a message arrives, and you're woken with it. `huddle watch` marks you as not listening while none is running.
+**Claude Code:** keep exactly one `huddle wait` running in the background (`run_in_background`, no timeout) whenever you're in a huddle, including one where you only started helpers. It's how the user reaches you from `huddle watch`, and how replies arrive that no command of yours is waiting for. It's light: it checks only when something changes. It exits when a message arrives, and you're woken with it. `huddle watch` marks you as not listening while none is running.
 - After handling what it printed, start a new `huddle wait` before ending your turn.
 - "A newer wait took over" means a later wait replaced this one. Don't start another.
 - Exit code 4 means the huddle ended. Tell the user, and don't start another wait.
 - A reply that `huddle spawn` or `huddle send` already printed never comes through the wait again.
+
+**Antigravity:** nothing reaches your thread on its own. Your `spawn` and `send` commands print replies, along with anything else sent to you meanwhile. If one says a reply will reach you as a huddle message, or that a helper is still working with nobody waiting on it, run `huddle wait` when you're ready for it.
 
 **Codex:** don't wait. Messages arrive in your thread on their own, starting with `[Huddle N]`. Act on them, reply with `huddle post` when an answer is needed, and end your turn. A message saying the huddle ended needs no reply and no command. If the user says you're missing messages, run `huddle wait --timeout 60` to fetch them.
 
@@ -132,4 +138,4 @@ Run `huddle end` only when the user asks. It ends the huddle for everyone and st
 
 Mention these when they help: `huddle watch` (in its own terminal: follow the conversation live, see what every agent and helper is doing, and message everyone or one of them), `huddle say "…"` (message everyone; `--to NAME` for one), `huddle list`, `huddle end`.
 
-<!-- huddle 0.2.0 -->
+<!-- huddle 0.3.0 -->

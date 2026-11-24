@@ -1,6 +1,6 @@
 [package]
 name = "huddle-watch"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 publish = false
 description = "The full-screen live view of huddle: every message between your agents, and what each one is doing"

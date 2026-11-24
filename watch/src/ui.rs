@@ -23,15 +23,17 @@ fn color(agent: &str) -> Color {
     match agent {
         "claude" => Color::Indexed(208),
         "codex" => Color::Indexed(75),
+        "agy" => Color::Indexed(141),
         _ => Color::Indexed(250),
     }
 }
 
-/// Each app's own mark, as its CLI shows it: Claude Code's ✻, Codex's >_. Drawn in the app's colour.
+/// Each app's own mark, as its CLI shows it: Claude Code's ✻, Codex's >_, Antigravity's ◆. Drawn in the app's colour.
 fn logo(agent: &str) -> Span<'static> {
     let mark = match agent {
         "claude" => "✻",
         "codex" => ">_",
+        "agy" => "◆",
         _ => "❯",
     };
     Span::styled(mark, Style::default().fg(color(agent)).add_modifier(Modifier::BOLD))
@@ -114,7 +116,12 @@ fn to_whom(m: &Message, crew: &Crew) -> String {
 /// A message as lines `width` columns wide, followed by the blank line before the next one.
 fn message(m: &Message, crew: &Crew, width: usize) -> Vec<Line<'static>> {
     if m.recipient.as_deref() == Some(crate::sessions::ACTIVITY) {
-        return vec![]; // where a thread's turn began: its work is drawn here, not a message
+        // where a thread's turn began: its work is drawn here. A turn you didn't start says what started it.
+        if m.text.is_empty() {
+            return vec![];
+        }
+        let note = vec![Span::styled("⏵ ", dim()), Span::styled(m.text.clone(), dim())];
+        return vec![spread(note, vec![Span::styled(clock(m.sent_at), dim())], width), Line::default()];
     }
     let stamp = Span::styled(clock(m.sent_at), dim());
     if m.sender == "huddle" {
@@ -208,12 +215,15 @@ fn help_lines() -> Vec<Line<'static>> {
         ("Moving around", &[
             ("↑ ↓  PgUp PgDn", "scroll (the mouse wheel works too)"),
             ("End", "jump to the newest message"),
+            ("ctrl+s", "split the view: Claude on the left, Codex on the right (again for one conversation; remembered)"),
+            ("← →", "in the split view: which column ↑ ↓ PgUp PgDn scroll (the wheel scrolls the one it's over)"),
             ("Ctrl-N  Ctrl-P", "next or previous huddle, when several are running"),
             ("Esc", "list every running huddle, to switch to another (Enter or its number opens it)"),
         ]),
         ("Typing commands", &[
             ("/stop NAME", "shut a helper down (a message starts it again)"),
             ("/interrupt NAME", "stop a helper's current turn"),
+            ("/view", "the same as ctrl+s: /view split or /view conversation"),
             ("/end", "end this huddle"),
             ("Ctrl-D", "quit the watch"),
         ]),
@@ -713,9 +723,25 @@ fn file_label(path: &str) -> String {
 
 /// The conversation as lines, the way Claude Code shows its transcript: each message, and under the one an agent
 /// is working on, its latest steps as they happen; once it's done, only its answer stays.
-fn conversation(f: &mut Feed, width: usize, s: &str, pins: &mut Vec<(usize, String)>) -> Vec<Line<'static>> {
+///
+/// With a `side` ("claude" or "codex"), one column of the split view: that app's agents' messages and work in full,
+/// what you said to them, and what the other side said to them as one line each.
+fn conversation(f: &mut Feed, width: usize, s: &str, pins: &mut Vec<(usize, String)>, side: Option<&str>) -> Vec<Line<'static>> {
     drawn(f, width);
     let mut cache = std::mem::take(&mut f.traced);
+    let on = |name: &str| side.is_none_or(|a| f.crew.agent(name) == a);
+    // drawn in full on this side
+    let mine = |m: &Message| match m.sender.as_str() {
+        "you" => m.recipient.as_deref().is_none_or(on),
+        "huddle" => on(m.text.split_whitespace().next().unwrap_or("")),
+        who => on(who),
+    };
+    // from the other side to this one: a line saying so
+    let heard = |m: &Message| {
+        side.is_some()
+            && !["you", "huddle"].contains(&m.sender.as_str())
+            && m.recipient.as_deref().is_none_or(|r| r != "you" && r != crate::sessions::ACTIVITY && on(r))
+    };
     let mut turns: std::collections::HashMap<i64, Vec<&Step>> = std::collections::HashMap::new();
     for st in f.steps.values() {
         if let Some(t) = st.turn {
@@ -754,11 +780,21 @@ fn conversation(f: &mut Feed, width: usize, s: &str, pins: &mut Vec<(usize, Stri
         if absorbed.contains(&i) {
             continue; // drawn among the steps of the turn it arrived in
         }
-        if m.sender == "you" {
-            pins.push((out.len(), first_paragraph(&m.text))); // what stays at the top once it's scrolled past
+        let whole = mine(m);
+        let work = turns.get(&m.id).filter(|st| m.id != 0 && on(&st[0].member));
+        if whole {
+            if m.sender == "you" {
+                pins.push((out.len(), first_paragraph(&m.text))); // what stays at the top once it's scrolled past
+            } else if m.recipient.as_deref() == Some(crate::sessions::ACTIVITY) && !m.text.is_empty() {
+                pins.push((out.len(), m.text.clone())); // (a turn you didn't start: what started it)
+            }
+            out.extend(f.cache[i].iter().cloned());
+        } else if work.is_some() || heard(m) {
+            out.extend(incoming(m, &f.crew, width));
+        } else {
+            continue;
         }
-        out.extend(f.cache[i].iter().cloned());
-        if let Some(steps) = turns.get(&m.id).filter(|_| m.id != 0) {
+        if let Some(steps) = work {
             let who = steps[0].member.clone();
             let agent = f.crew.agent(&who);
             let live = KEEP_STEPS || is_live(m, steps);
@@ -799,7 +835,7 @@ fn conversation(f: &mut Feed, width: usize, s: &str, pins: &mut Vec<(usize, Stri
         // under what you sent, only when it will really sit: an idle thread that isn't listening hasn't taken it in
         let to = m.recipient.clone().unwrap_or_default();
         let stuck = f.crew.by_name(&to).map(|x| !f.hears(x) && !busy(&f.state(x))).unwrap_or(false);
-        if stuck && !f.seen(m) {
+        if whole && stuck && !f.seen(m) {
             if out.last().map(|l| l.width() == 0).unwrap_or(false) {
                 out.pop();
             }
@@ -810,6 +846,23 @@ fn conversation(f: &mut Feed, width: usize, s: &str, pins: &mut Vec<(usize, Stri
     }
     f.traced = cache;
     out
+}
+
+/// In a column of the split view, a message from the other side, as one line: "← ✻ Claude: Review the diff…".
+fn incoming(m: &Message, crew: &Crew, width: usize) -> Vec<Line<'static>> {
+    let agent = crew.agent(&m.sender);
+    let reply = if m.reply_to.is_some() { " · reply" } else { "" };
+    let stamp = vec![Span::styled(clock(m.sent_at), dim()), Span::raw("  ")];
+    let lead = format!("{}{reply}: ", crew.label(&m.sender));
+    let room = width.saturating_sub(6 + lead.width() + width_of(&stamp) + 2);
+    let left = vec![
+        Span::styled("  ← ", dim()),
+        logo(&agent),
+        Span::raw(" "),
+        Span::styled(lead, dim()),
+        Span::raw(cut(&first_paragraph(&m.text), room)),
+    ];
+    vec![spread(left, stamp, width), Line::default()]
 }
 
 /// A prompt as one line: its first paragraph, whitespace collapsed (what Claude Code pins).
@@ -1243,8 +1296,80 @@ fn typed_lines(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// The narrowest the conversation can be and still split into two readable columns.
+const SPLIT_MIN: u16 = 100;
+
+/// Scrolled up, as Claude Code does: the prompt the lines at the top answer, pinned there once it's out of view (its
+/// first line gone). Following the newest lines, nothing is pinned.
+fn pinned(frame: &mut Frame, area: Rect, pins: &[(usize, String)], start: usize, width: usize, zoomed: bool) {
+    let Some((_, text)) = pins.iter().rev().find(|(at, _)| *at < start) else { return };
+    let line = if zoomed {
+        Line::styled(cut(&format!("── {text} "), width) + &"─".repeat(width.saturating_sub(text.width() + 4)), dim())
+    } else {
+        let shade = Style::default().bg(SHADE);
+        let body = cut(text, width.saturating_sub(6));
+        let pad = " ".repeat(width.saturating_sub(body.width() + 4));
+        Line::from(vec![Span::styled("  ❯ ", bold().patch(shade)), Span::styled(body + &pad, dim().patch(shade))])
+    };
+    frame.render_widget(Paragraph::new(line), Rect { height: 1, width: area.width.saturating_sub(2), ..area });
+}
+
+/// The split view: Claude's side on the left, Codex's on the right, each with its own messages and work. Each
+/// scrolls on its own; the one the scroll keys move (← →) is underlined.
+fn split_view(frame: &mut Frame, f: &mut Feed, area: Rect, s: &str, chosen: usize) {
+    let col = area.width.saturating_sub(3) / 2; // both the same width, so each message is drawn once for both
+    for (k, agent) in crate::app::AGENTS.into_iter().enumerate() {
+        let x = area.x + if k == 0 { 0 } else { col + 3 };
+        let title_area = Rect { x, y: area.y, width: col, height: 1 };
+        let body = Rect { x, y: area.y + 2, width: col, height: area.height.saturating_sub(2) };
+        let (width, height) = ((col as usize).saturating_sub(2), body.height as usize);
+
+        let names: Vec<String> = f.crew.active().filter(|m| m.agent == agent).map(|m| m.name.clone()).collect();
+        let mut title = vec![
+            logo(agent),
+            Span::raw(" "),
+            Span::styled(crate::app::app_name(agent).to_string(), Style::default().fg(color(agent)).add_modifier(Modifier::BOLD)),
+        ];
+        if !names.is_empty() {
+            title.push(Span::styled(format!("  {}", names.join(", ")), dim()));
+        }
+        frame.render_widget(Paragraph::new(Line::from(title)), title_area);
+        if k == chosen {
+            let rule = Line::styled("─".repeat(col as usize), Style::default().fg(color(agent)).add_modifier(Modifier::DIM));
+            frame.render_widget(Paragraph::new(rule), Rect { y: area.y + 1, ..title_area });
+        }
+
+        let mut pins = vec![];
+        let mut lines = conversation(f, width, s, &mut pins, Some(agent));
+        if lines.is_empty() {
+            let none = if names.is_empty() { "isn't in this huddle" } else { "hasn't said anything yet" };
+            lines.push(Line::styled(format!("  {} {none}.", crate::app::app_name(agent)), dim()));
+        }
+        let total = lines.len();
+        if f.split_scroll[k] > 0 {
+            f.split_scroll[k] += total.saturating_sub(f.split_total[k]); // scrolled up: stay on the same lines
+        }
+        f.split_total[k] = total;
+        f.split_scroll[k] = f.split_scroll[k].min(total.saturating_sub(height));
+        let scroll = f.split_scroll[k];
+        let end = total - scroll;
+        let start = end.saturating_sub(height);
+        show(frame, body, lines[start..end].to_vec(), height, scroll, f.unseen, total, start);
+        if scroll > 0 {
+            pinned(frame, body, &pins, start, width, false);
+        }
+    }
+    // the line between the sides
+    let rule = vec![Line::styled("│", dim()); area.height as usize];
+    frame.render_widget(Paragraph::new(rule), Rect { x: area.x + col + 1, y: area.y, width: 1, height: area.height });
+    f.scroll = f.split_scroll[0].max(f.split_scroll[1]); // for counting what arrives while you're scrolled up
+}
+
 fn chat(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let (split, column) = (app.split, app.column);
+    let mut split_shown = false;
+    let mut split_at = 0;
     let s = spin(app);
     let ids: Vec<i64> = app.feeds.iter().map(|f| f.h.id).collect();
     let current = app.current;
@@ -1390,47 +1515,39 @@ fn chat(frame: &mut Frame, app: &mut App) {
         let mut shown = lines;
         shown.truncate(height);
         frame.render_widget(Paragraph::new(shown), talk);
+    } else if zoom.is_none() && split && talk.width >= SPLIT_MIN {
+        split_shown = true;
+        split_at = talk.x + talk.width.saturating_sub(3) / 2 + 1;
+        split_view(frame, f, talk, s, column);
     } else {
-    let mut pins: Vec<(usize, String)> = vec![];
-    let (lines, scroll, unseen) = match &zoom {
-        // one agent's every step, full screen
-        Some(who) => {
-            let mut cache = std::mem::take(&mut f.traced);
-            let lines = zoom_lines(f, who, width, s, &mut pins, &mut cache);
-            f.traced = cache;
-            let scroll = zoom_scroll(who, lines.len(), height);
-            (lines, scroll, 0)
-        }
-        // the conversation, with each agent's work shown under the message that asked for it
-        None => {
-            let lines = conversation(f, width, s, &mut pins);
-            if f.scroll > 0 {
-                f.scroll += lines.len().saturating_sub(f.drawn_total); // scrolled up: stay on the same lines
+        let mut pins: Vec<(usize, String)> = vec![];
+        let (lines, scroll, unseen) = match &zoom {
+            // one agent's every step, full screen
+            Some(who) => {
+                let mut cache = std::mem::take(&mut f.traced);
+                let lines = zoom_lines(f, who, width, s, &mut pins, &mut cache);
+                f.traced = cache;
+                let scroll = zoom_scroll(who, lines.len(), height);
+                (lines, scroll, 0)
             }
-            f.drawn_total = lines.len();
-            f.scroll = f.scroll.min(lines.len().saturating_sub(height));
-            (lines, f.scroll, f.unseen)
+            // the conversation, with each agent's work shown under the message that asked for it
+            None => {
+                let lines = conversation(f, width, s, &mut pins, None);
+                if f.scroll > 0 {
+                    f.scroll += lines.len().saturating_sub(f.drawn_total); // scrolled up: stay on the same lines
+                }
+                f.drawn_total = lines.len();
+                f.scroll = f.scroll.min(lines.len().saturating_sub(height));
+                (lines, f.scroll, f.unseen)
+            }
+        };
+        let total = lines.len();
+        let end = total - scroll;
+        let start = end.saturating_sub(height);
+        show(frame, talk, lines[start..end].to_vec(), height, scroll, unseen, total, start);
+        if scroll > 0 {
+            pinned(frame, talk, &pins, start, width, zoom.is_some());
         }
-    };
-    let total = lines.len();
-    let end = total - scroll;
-    let start = end.saturating_sub(height);
-    show(frame, talk, lines[start..end].to_vec(), height, scroll, unseen, total, start);
-    // Scrolled up, as Claude Code does: the prompt the lines at the top answer, pinned there once it's out of view
-    // (its first line gone). Following the newest lines, nothing is pinned.
-    if scroll > 0 {
-        if let Some((_, text)) = pins.iter().rev().find(|(at, _)| *at < start) {
-            let line = if zoom.is_some() {
-                Line::styled(cut(&format!("── {text} "), width) + &"─".repeat(width.saturating_sub(text.width() + 4)), dim())
-            } else {
-                let shade = Style::default().bg(SHADE);
-                let body = cut(text, width.saturating_sub(6));
-                let pad = " ".repeat(width.saturating_sub(body.width() + 4));
-                Line::from(vec![Span::styled("  ❯ ", bold().patch(shade)), Span::styled(body + &pad, dim().patch(shade))])
-            };
-            frame.render_widget(Paragraph::new(line), Rect { height: 1, width: talk.width.saturating_sub(2), ..talk });
-        }
-    }
     }
 
     // what's waiting for a working agent, then who's doing what
@@ -1457,6 +1574,8 @@ fn chat(frame: &mut Frame, app: &mut App) {
     let foot = inset(foot);
     frame.render_widget(Paragraph::new(under), Rect { x: foot.x + 1, width: foot.width.saturating_sub(1), ..foot });
     app.page = height.saturating_sub(2).max(1);
+    app.split_shown = split_shown;
+    app.split_at = split_at;
 }
 
 #[cfg(test)]
@@ -1492,6 +1611,42 @@ mod tests {
         assert!(rows.iter().all(|r| !r.contains("thr ee")), "no word broken across rows: {rows:?}");
         assert_eq!(lines[0].spans[0].style.fg, Some(REMOVED_NUMBER));
         assert!(lines.iter().any(|l| l.spans.iter().any(|s| s.content.contains("eleven") && s.style.bg == Some(ADDED_WORD))));
+    }
+
+    fn text_of(lines: &[Line]) -> String {
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_split_view_puts_each_side_in_its_column() {
+        use crate::db::{Huddle, Member, Message, Step};
+        let h = Huddle { id: 1, code: "1".into(), repo: "/r".into(), topic: None, opener: "claude".into(), opened_at: 0.0,
+            joined_at: Some(1.0), last_at: 0.0, ended_at: None };
+        let mut f = Feed::new(h);
+        let member = |id, name: &str, agent: &str, helper| Member { id, parent: None, name: name.into(), agent: agent.into(),
+            thread: None, helper, left_at: None, state: Some("idle".into()), activity: None, since: None, shared: false };
+        f.crew.all = vec![member(1, "claude", "claude", false), member(2, "reviewer", "codex", true)];
+        let msg = |id, sender: &str, to: Option<&str>, text: &str, reply_to| Message { id, sender: sender.into(),
+            recipient: to.map(Into::into), text: text.into(), sent_at: id as f64 * 10.0, reply_to, steer: false };
+        f.items = vec![
+            msg(1, "you", Some("claude"), "plan the release", None),
+            msg(2, "claude", Some("reviewer"), "review the diff please", None),
+            msg(3, "reviewer", Some("claude"), "two bugs found", Some(2)),
+            msg(4, "you", None, "thanks both", None),
+        ];
+        f.steps.insert(1, Step { id: 1, member: "reviewer".into(), turn: Some(2), kind: "run".into(), title: "git diff".into(),
+            detail: None, status: Some("done".into()), at: 21.0, updated: 22.0 });
+        let left = text_of(&conversation(&mut f, 80, "", &mut vec![], Some("claude")));
+        let right = text_of(&conversation(&mut f, 80, "", &mut vec![], Some("codex")));
+
+        assert!(left.contains("plan the release") && right.contains("thanks both") && left.contains("thanks both"));
+        assert!(!right.contains("plan the release"), "what you said to Claude stays on Claude's side");
+        assert!(left.contains("review the diff please") && !left.contains("git diff"), "the reviewer's work isn't Claude's");
+        assert!(left.contains("← ") && left.contains("· reply: two bugs found"), "its reply shows on Claude's side as a line");
+        assert!(right.contains("← ") && right.contains("Claude: review the diff please"), "what it was asked heads its work");
+        assert!(right.contains("git diff") && right.contains("two bugs found"));
+        let all = text_of(&conversation(&mut f, 80, "", &mut vec![], None));
+        assert!(!all.contains("← "), "one conversation has no lines from the other side");
     }
 
     #[test]

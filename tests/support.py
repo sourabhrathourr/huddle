@@ -205,6 +205,119 @@ FAKE_CLAUDE = textwrap.dedent("""\
 """)
 
 
+# Stands in for Antigravity's `agy`: in print mode with stream-json, it names its conversation first, then answers each
+# message as a turn (see the module docstring), with a command and an edit as steps. Ctrl-C (SIGINT) ends it, as the
+# real one does. Without --print=, it's the app opened in a terminal: it records that and exits.
+FAKE_AGY = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json, os, signal, sys, threading, uuid
+    from pathlib import Path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from fake_turn import log, task_of, work
+    args = sys.argv[1:]
+    if "--help" in args:
+        print("  --input-format  Input format for print mode (text, stream-json)")
+        sys.exit(0)
+    log(app="agy", argv=args, cwd=os.getcwd())
+    conv = args[args.index("--conversation") + 1] if "--conversation" in args else str(uuid.uuid4())
+    if "--conversation" in args and (Path(os.environ["FAKE_AGENT_LOG"]).parent / "agy-gone").exists():
+        print(json.dumps({"event": "result", "result": {"conversation_id": conv, "status": "ERROR", "response": "",
+                          "error": "conversation not found"}}), flush=True)
+        sys.exit(1)
+    if "--print=" not in args:
+        log(app="agy", resume=conv)
+        sys.exit(0)
+    lock, interrupted, deny_always, denied = threading.Lock(), threading.Event(), [], []
+    count = Path(os.environ["FAKE_AGENT_LOG"]).parent / f"agy-{conv}.turns"  # counting on when it's started again
+
+    def out(obj):
+        with lock:
+            sys.stdout.write(json.dumps(obj) + "\\n")
+            sys.stdout.flush()
+
+    def stopped(*_):
+        out({"event": "result", "result": {"conversation_id": "", "status": "ERROR", "response": "",
+             "error": "context canceled", "finished_reason": "interrupted"}})
+        os._exit(1)
+
+    def step(index, **fields):
+        out({"event": "step_update", "step_update": dict(conversation_id=conv, step_index=index, **fields)})
+
+    def turn(text, n):
+        task = task_of(text.rsplit("\\n---\\n\\n", 1)[-1])  # below the helper note, if it came with one
+        run = {"name": "run_command", "parameters": {"CommandLine": "ls tests"}}
+        step(n * 10 + 1, state="PENDING", step_type="tool", tool_name="run_command", tool_info={})  # (under review)
+        step(n * 10 + 1, state="ACTIVE", step_type="tool", tool_name="run_command", tool_info=run)
+        step(n * 10 + 1, state="DONE", step_type="tool", tool_name="run_command",
+             tool_info=dict(run, output="test_a.py\\ntest_b.py"))
+        edit = {"name": "edit_file", "parameters": {"Path": "/repo/tests/test_a.py"}}
+        step(n * 10 + 2, state="ACTIVE", step_type="tool", tool_name="edit_file", tool_info=edit)
+        step(n * 10 + 2, state="DONE", step_type="tool", tool_name="edit_file", tool_info=edit)
+        if task.startswith("CRASHMID"):  # it dies while a call is open
+            step(n * 10 + 6, state="ACTIVE", step_type="tool", tool_name="view_file",
+                 tool_info={"name": "view_file", "parameters": {"Path": "/repo/README.md"}})
+            os._exit(9)
+        if task.startswith("DENYALWAYS"):
+            deny_always.append(True)
+        if task.startswith("DENYSOFT"):  # refused, but it carries on and answers anyway
+            test = {"name": "run_command", "parameters": {"CommandLine": "npm test"},
+                    "error": {"type": "TOOL_ERROR", "message": "permission check failed for run_command: user denied "
+                                                               "permission for run_command(npm test)"}}
+            step(n * 10 + 5, state="ACTIVE", step_type="tool", tool_name="run_command", tool_info=test)
+            step(n * 10 + 5, state="ERROR", step_type="tool", tool_name="run_command", tool_info=test)
+            denied.append({"action": "run_command", "display_name": "Run"})
+        elif task.startswith("DENY") or deny_always:
+            # a command it needed permission for, refused as headless agy refuses it: the turn ends there,
+            # unanswered, and a call it started alongside is cancelled, never finishing
+            test = {"name": "run_command", "parameters": {"CommandLine": "npm test"},
+                    "error": {"type": "TOOL_ERROR", "message": "permission check failed for run_command: user denied "
+                                                               "permission for run_command(npm test)"}}
+            step(n * 10 + 5, state="ACTIVE", step_type="tool", tool_name="run_command", tool_info=test)
+            step(n * 10 + 6, state="ACTIVE", step_type="tool", tool_name="view_file",
+                 tool_info={"name": "view_file", "parameters": {"Path": "/repo/README.md"}})
+            step(n * 10 + 5, state="ERROR", step_type="tool", tool_name="run_command", tool_info=test)
+            denied.append({"action": "run_command", "display_name": "Run"})
+            out({"event": "result", "result": {"conversation_id": conv, "status": "SUCCESS", "response": "",
+                 "denied_actions": denied}})
+            return
+        answer, finished = work(task, interrupted)
+        if not finished:
+            return
+        final = answer or f"agy {conv} turn {n}: {task}"
+        step(n * 10 + 3, state="ACTIVE", step_type="agent_response", text_delta=final)
+        step(n * 10 + 3, state="DONE", step_type="agent_response", text_delta="\\n")
+        # (like agy, every later result repeats what was refused before)
+        out({"event": "result", "result": {"conversation_id": conv, "status": "SUCCESS", "response": final + "\\n",
+             **({"denied_actions": denied} if denied else {})}})
+
+    signal.signal(signal.SIGINT, stopped)
+    out({"event": "init", "conversation_id": conv, "init": {"cwd": os.getcwd()}})
+    for line in sys.stdin:
+        m = json.loads(line)
+        log(app="agy", message=m)
+        if m.get("event") == "user":
+            n = int(count.read_text()) + 1 if count.exists() else 1
+            count.write_text(str(n))
+            threading.Thread(target=turn, args=(m["message"]["content"], n), daemon=True).start()
+""")
+
+
+# Stands in for Rex's CLI: records what it was asked, and makes up an ID for each pane or tab it's asked to open.
+FAKE_REX = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json, os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from fake_turn import log
+    args = sys.argv[1:]
+    log(app="rex", argv=args)
+    n = sum(1 for line in open(os.environ["FAKE_AGENT_LOG"]) if '"app": "rex"' in line)
+    if args[:2] == ["window", "new"]:
+        print(json.dumps({"window_id": f"window:{n}", "block_ids": [f"block:{n}"]}))
+    elif args[:1] == ["split"]:
+        print(json.dumps({"block_ids": [f"block:{n}"]}))
+""")
+
+
 # Stands in for `ps`, so each test decides which Claude Code window a thread runs in: FAKE_CLAUDE_WINDOW=N puts
 # the calling huddle process under a `claude` process numbered 9000+N; without it there's no Claude process at all.
 FAKE_PS = textwrap.dedent("""\
@@ -301,7 +414,8 @@ class HuddleTest(unittest.TestCase):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
         (bin_dir / "fake_turn.py").write_text(FAKE_TURN)
-        for name, text in (("codex", FAKE_CODEX), ("claude", FAKE_CLAUDE), ("ps", FAKE_PS)):
+        for name, text in (("codex", FAKE_CODEX), ("claude", FAKE_CLAUDE), ("ps", FAKE_PS), ("rex", FAKE_REX),
+                           ("agy", FAKE_AGY)):
             (bin_dir / name).write_text(text)
             (bin_dir / name).chmod(0o755)
         self.log = self.tmp / "codex.log"
@@ -371,14 +485,18 @@ class HuddleTest(unittest.TestCase):
         return [i for i in items if app is None or i["app"] == app]
 
     def env_for(self, agent=None, thread=None, **extra):
-        # nothing of the developer's own session: not their threads, nor the herdr or tmux they run the tests in
+        # nothing of the developer's own session: not their threads, nor the herdr, tmux or Rex they run the tests in
         env = {k: v for k, v in os.environ.items() if k not in ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "HUDDLE_MEMBER",
-                                                                "HC_TERMINAL_SOCKET", "HC_TERMINAL_ID", "TMUX", "TMUX_PANE")}
+                                                                "ANTIGRAVITY_CONVERSATION_ID",
+                                                                "HC_TERMINAL_SOCKET", "HC_TERMINAL_ID", "TMUX", "TMUX_PANE",
+                                                                "REX_SERVER", "REX_SESSION", "REX_BLOCK", "HUDDLE_OPEN")}
         env.update(self.env)
         if agent == "claude":
             env["CLAUDE_CODE_SESSION_ID"] = thread
         elif agent == "codex":
             env["CODEX_THREAD_ID"] = thread
+        elif agent == "agy":
+            env["ANTIGRAVITY_CONVERSATION_ID"] = thread
         env.update(extra)
         return env
 
